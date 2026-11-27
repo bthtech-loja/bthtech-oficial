@@ -94,6 +94,8 @@ export interface PaymentConfig {
   pixBank: string;
   pixQrCodeImageUrl?: string;
   defaultExternalCheckoutUrl: string;
+  infinitePayEnabled?: boolean;
+  infinitePayHandle?: string;
 }
 
 export type RegionKey = 'sul' | 'sudeste' | 'centroOeste' | 'nordeste' | 'norte';
@@ -148,7 +150,7 @@ export interface EmailConfig {
   templates: Record<EmailTemplateKey, EmailTemplateConfig>;
 }
 
-export type PaymentMethod = 'pix' | 'credit_card' | 'external_link';
+export type PaymentMethod = 'pix' | 'credit_card' | 'external_link' | 'infinitepay';
 
 export type ShippingMethod = 'economic' | 'express' | 'motoboy_cascavel' | 'pickup_cascavel';
 
@@ -195,7 +197,11 @@ export type OrderTimelineStage =
   | 'Produto Enviado'
   | 'Produto Entregue';
 
-export type OrderStatus = OrderTimelineStage | 'Cancelado';
+export type OrderStatus =
+  | 'Aguardando Pagamento'
+  | 'Pago'
+  | OrderTimelineStage
+  | 'Cancelado';
 
 export interface SavedAddress {
   id: string;
@@ -243,6 +249,15 @@ export interface Order {
   installmentValue: number;
   totalAmount: number;
   customer: CustomerFiscalData;
+  infinitePay?: {
+    handle?: string;
+    checkoutUrl?: string;
+    transactionNsu?: string;
+    slug?: string;
+    captureMethod?: string;
+    receiptUrl?: string;
+    paidAt?: string;
+  };
 }
 
 export interface StoreState {

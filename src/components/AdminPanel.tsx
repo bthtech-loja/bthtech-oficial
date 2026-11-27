@@ -106,7 +106,9 @@ const REGION_LABELS: Record<RegionKey, string> = {
 };
 
 const ORDER_STATUSES: OrderStatus[] = [
+  'Aguardando Pagamento',
   'Pedido Realizado',
+  'Pago',
   'Pagamento Aprovado',
   'Em Separação',
   'Produto Enviado',
@@ -1779,6 +1781,88 @@ export function AdminPanel({
         {/* TAB 4: PAGAMENTOS E PARCELAMENTO */}
         {activeTab === 'payments' && (
           <div className="space-y-6">
+            {/* InfinitePay Integrated Checkout Section */}
+            <div className="bg-[#161A20] border border-[#272D38] rounded-md p-5 space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#272D38] pb-3">
+                <div>
+                  <h2 className="font-display font-bold text-lg uppercase tracking-wider text-white">
+                    Checkout Integrado InfinitePay (PIX e Cartão até 12x)
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Receba via PIX ou Cartão de Crédito na página segura da InfinitePay com baixa automática via webhook no Supabase.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={store.payment.infinitePayEnabled ?? true}
+                  onClick={() =>
+                    setStore((p) => ({
+                      ...p,
+                      payment: {
+                        ...p.payment,
+                        infinitePayEnabled: !(p.payment.infinitePayEnabled ?? true),
+                      },
+                    }))
+                  }
+                  className="inline-flex items-center gap-3 px-3.5 py-2 rounded bg-[#0B0D10] border border-[#272D38] hover:border-slate-500 transition-colors"
+                >
+                  <span className="text-xs font-semibold text-slate-200">
+                    Ativar InfinitePay
+                  </span>
+                  <span
+                    className={`w-10 h-5 rounded-full relative transition-colors ${
+                      (store.payment.infinitePayEnabled ?? true) ? 'bg-[#00E676]' : 'bg-slate-700'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 w-4 h-4 rounded-full bg-[#0B0D10] transition-transform ${
+                        (store.payment.infinitePayEnabled ?? true) ? 'left-5' : 'left-0.5'
+                      }`}
+                    />
+                  </span>
+                  <span
+                    className={`text-xs font-bold ${
+                      (store.payment.infinitePayEnabled ?? true) ? 'text-[#00E676]' : 'text-slate-400'
+                    }`}
+                  >
+                    {(store.payment.infinitePayEnabled ?? true) ? 'ATIVO' : 'INATIVO'}
+                  </span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Handle / InfiniteTag (sem $)
+                  </label>
+                  <input
+                    type="text"
+                    value={store.payment.infinitePayHandle ?? 'bth_solar_distribuidora'}
+                    onChange={(e) =>
+                      setStore((p) => ({
+                        ...p,
+                        payment: {
+                          ...p.payment,
+                          infinitePayHandle: e.target.value.replace(/^\$/, '').trim(),
+                        },
+                      }))
+                    }
+                    placeholder="bth_solar_distribuidora"
+                    className="w-full h-10 px-3 rounded bg-[#0B0D10] border border-[#272D38] text-sm font-mono-num text-white"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Endpoint utilizado no servidor: <code className="text-slate-200">/api/infinitepay-checkout</code> e webhook <code className="text-slate-200">/api/infinitepay-webhook</code>.
+                  </p>
+                </div>
+
+                <div className="p-3 rounded bg-[#0B0D10] border border-[#272D38] text-[11px] text-slate-300 leading-relaxed">
+                  Quando ativo, o cliente pode finalizar o pedido diretamente no Checkout Integrado da InfinitePay (PIX ou Cartão até 12x), gravando o pedido como <strong className="text-amber-300">Aguardando Pagamento</strong> e atualizando automaticamente para <strong className="text-[#00E676]">Pago</strong> após a confirmação.
+                </div>
+              </div>
+            </div>
+
             {/* PIX Configuration Section */}
             <div className="bg-[#161A20] border border-[#272D38] rounded-md p-5 space-y-5">
               <div className="border-b border-[#272D38] pb-2.5">
@@ -3324,6 +3408,8 @@ export function AdminPanel({
                             className={`px-2.5 py-1 rounded text-xs font-display font-bold uppercase tracking-wider border ${
                               order.status === 'Cancelado'
                                 ? 'bg-red-950/60 border-red-500/50 text-red-300'
+                                : order.status === 'Aguardando Pagamento'
+                                ? 'bg-amber-950/50 border-amber-500/50 text-amber-300'
                                 : 'bg-[#00E676]/10 border-[#00E676]/40 text-[#00E676]'
                             }`}
                           >
@@ -3384,6 +3470,8 @@ export function AdminPanel({
                             Total: {formatBRL(order.totalAmount)} (
                             {order.paymentMethod === 'pix'
                               ? 'PIX'
+                              : order.paymentMethod === 'infinitepay'
+                              ? 'InfinitePay (PIX / Cartão)'
                               : order.paymentMethod === 'credit_card'
                               ? `Cartão ${order.installments}x`
                               : 'Link Externo'}

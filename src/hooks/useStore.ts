@@ -29,8 +29,11 @@ export const ORDER_TIMELINE_STAGES: OrderTimelineStage[] = [
 function normalizeOrderStatus(rawStatus: string): OrderStatus {
   switch (rawStatus) {
     case 'Aguardando Pagamento':
+      return 'Aguardando Pagamento';
     case 'Pedido Realizado':
       return 'Pedido Realizado';
+    case 'Pago':
+      return 'Pago';
     case 'Pagamento Aprovado':
       return 'Pagamento Aprovado';
     case 'Pago / Em Separação':
@@ -49,6 +52,13 @@ function normalizeOrderStatus(rawStatus: string): OrderStatus {
   }
 }
 
+function mapStatusToTimelineStage(status: OrderStatus): OrderTimelineStage | null {
+  if (status === 'Cancelado') return null;
+  if (status === 'Aguardando Pagamento') return 'Pedido Realizado';
+  if (status === 'Pago') return 'Pagamento Aprovado';
+  return status;
+}
+
 function buildUpdatedStatusHistory(
   existing: Partial<Record<OrderTimelineStage, string>> | undefined,
   status: OrderStatus,
@@ -58,8 +68,9 @@ function buildUpdatedStatusHistory(
     'Pedido Realizado': existing?.['Pedido Realizado'] || fallbackCreatedAt,
     ...(existing || {}),
   };
-  if (status === 'Cancelado') return next;
-  const targetIdx = ORDER_TIMELINE_STAGES.indexOf(status);
+  const stageKey = mapStatusToTimelineStage(status);
+  if (!stageKey) return next;
+  const targetIdx = ORDER_TIMELINE_STAGES.indexOf(stageKey);
   const nowIso = new Date().toISOString();
   ORDER_TIMELINE_STAGES.forEach((stage, idx) => {
     if (idx <= targetIdx && !next[stage]) {
@@ -67,7 +78,7 @@ function buildUpdatedStatusHistory(
     }
   });
   // Update exact timestamp for the newly selected active stage
-  next[status] = nowIso;
+  next[stageKey] = nowIso;
   return next;
 }
 
@@ -80,8 +91,9 @@ function normalizeOrders(rawOrders: unknown): Order[] {
       'Pedido Realizado': order.statusHistory?.['Pedido Realizado'] || order.createdAt,
       ...(order.statusHistory || {}),
     };
-    if (normalizedStatus !== 'Cancelado') {
-      const idx = ORDER_TIMELINE_STAGES.indexOf(normalizedStatus);
+    const stageKey = mapStatusToTimelineStage(normalizedStatus);
+    if (stageKey) {
+      const idx = ORDER_TIMELINE_STAGES.indexOf(stageKey);
       ORDER_TIMELINE_STAGES.forEach((stage, sIdx) => {
         if (sIdx <= idx && !history[stage]) {
           history[stage] = order.createdAt;
@@ -216,6 +228,13 @@ function normalizeStoreState(
       ...INITIAL_STORE_STATE.payment,
       ...(parsed.payment || {}),
       pixQrCodeImageUrl: parsed.payment?.pixQrCodeImageUrl || '',
+      infinitePayEnabled:
+        typeof parsed.payment?.infinitePayEnabled === 'boolean'
+          ? parsed.payment.infinitePayEnabled
+          : INITIAL_STORE_STATE.payment.infinitePayEnabled,
+      infinitePayHandle:
+        (parsed.payment?.infinitePayHandle || '').trim() ||
+        INITIAL_STORE_STATE.payment.infinitePayHandle,
       installmentRates: {
         ...INITIAL_STORE_STATE.payment.installmentRates,
         ...(parsed.payment?.installmentRates || {}),
@@ -342,12 +361,15 @@ export function useStore() {
   }, []);
 
   const enqueueCloudUpsert = useCallback(
-    (snapshot: StoreState, options?: { notify?: boolean }) => {
+    (
+      snapshot: StoreState,
+      options?: { notify?: boolean }
+    ): Promise<{ ok: boolean; error?: string }> => {
       const serialized = JSON.stringify(snapshot);
       lastCloudHashRef.current = serialized;
       pendingUploadsCountRef.current += 1;
 
-      uploadChainRef.current = uploadChainRef.current
+      const task = uploadChainRef.current
         .then(async () => {
           const res = await upsertCloudStore(snapshot);
           if (options?.notify) {
@@ -358,23 +380,30 @@ export function useStore() {
                 : res.error || 'Erro ao sincronizar na nuvem.'
             );
           }
+          return { ok: res.ok, error: res.error };
         })
         .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : 'Erro desconhecido';
           if (options?.notify) {
-            const msg = err instanceof Error ? err.message : 'Erro desconhecido';
             showCloudSyncNotice(false, `Erro ao sincronizar na nuvem: ${msg}`);
           }
+          return { ok: false, error: msg };
         })
         .finally(() => {
           pendingUploadsCountRef.current = Math.max(0, pendingUploadsCountRef.current - 1);
         });
+
+      uploadChainRef.current = task.then(() => undefined);
+      return task;
     },
     [showCloudSyncNotice]
   );
 
-  const refreshFromCloud = useCallback(async () => {
-    if (isRefreshingRef.current) return;
-    if (pendingUploadsCountRef.current > 0 || debounceTimerRef.current !== null) return;
+  const refreshFromCloud = useCallback(async (): Promise<StoreState | null> => {
+    if (isRefreshingRef.current) return storeRef.current;
+    if (pendingUploadsCountRef.current > 0 || debounceTimerRef.current !== null) {
+      return storeRef.current;
+    }
 
     isRefreshingRef.current = true;
     const startMutationVersion = mutationVersionRef.current;
@@ -385,7 +414,7 @@ export function useStore() {
         debounceTimerRef.current !== null ||
         mutationVersionRef.current !== startMutationVersion
       ) {
-        return;
+        return storeRef.current;
       }
 
       if (res.status === 'found') {
@@ -393,6 +422,7 @@ export function useStore() {
         const serialized = JSON.stringify(normalized);
         if (serialized !== lastCloudHashRef.current || !cloudReadyRef.current) {
           lastCloudHashRef.current = serialized;
+          storeRef.current = normalized;
           isApplyingCloudRef.current = true;
           setStore(normalized);
           try {
@@ -402,11 +432,15 @@ export function useStore() {
           }
         }
         cloudReadyRef.current = true;
-      } else if (res.status === 'empty') {
+        return normalized;
+      }
+
+      if (res.status === 'empty') {
         if (!cloudReadyRef.current) {
           const seedState = normalizeStoreState(storeRef.current || INITIAL_STORE_STATE);
           const serialized = JSON.stringify(seedState);
           lastCloudHashRef.current = serialized;
+          storeRef.current = seedState;
           isApplyingCloudRef.current = true;
           setStore(seedState);
           try {
@@ -416,9 +450,13 @@ export function useStore() {
           }
           cloudReadyRef.current = true;
           enqueueCloudUpsert(seedState);
+          return seedState;
         }
+        return storeRef.current;
       }
+
       // On 'error', keep cloudReadyRef unchanged to avoid overwriting existing cloud data on passive reads
+      return null;
     } finally {
       isRefreshingRef.current = false;
     }
@@ -565,25 +603,98 @@ export function useStore() {
   }, []);
 
   const createOrder = useCallback(
-    (order: Order) => {
-      markImmediateCloudMutation();
-      setStore((prev) => {
-        const updatedProducts = prev.products.map((prod) => {
-          const bought = order.items.find((i) => i.productId === prod.id);
-          if (!bought) return prod;
-          return {
-            ...prod,
-            stock: Math.max(0, prod.stock - bought.quantity),
-          };
-        });
+    async (order: Order): Promise<{ ok: boolean; error?: string }> => {
+      markImmediateCloudMutation(true);
+      immediateNotifyRef.current = false;
+      const prev = storeRef.current;
+      const updatedProducts = prev.products.map((prod) => {
+        const bought = order.items.find((i) => i.productId === prod.id);
+        if (!bought) return prod;
         return {
-          ...prev,
-          products: updatedProducts,
-          orders: [order, ...prev.orders],
+          ...prod,
+          stock: Math.max(0, prod.stock - bought.quantity),
         };
       });
+      const nextState: StoreState = {
+        ...prev,
+        products: updatedProducts,
+        orders: [order, ...prev.orders],
+      };
+      storeRef.current = nextState;
+      try {
+        localStorage.setItem(STORE_STORAGE_KEY, JSON.stringify(nextState));
+      } catch {
+        // Ignore storage quota warnings gracefully
+      }
+      setStore(nextState);
+      return enqueueCloudUpsert(nextState, { notify: true });
     },
-    [markImmediateCloudMutation]
+    [enqueueCloudUpsert, markImmediateCloudMutation]
+  );
+
+  const markOrderAsPaid = useCallback(
+    async (
+      orderId: string,
+      details?: {
+        transactionNsu?: string;
+        slug?: string;
+        captureMethod?: string;
+        receiptUrl?: string;
+      }
+    ): Promise<{ ok: boolean; order: Order | null; error?: string }> => {
+      const prev = storeRef.current;
+      const existing = prev.orders.find((o) => o.id === orderId) || null;
+      if (!existing) {
+        return { ok: false, order: null, error: 'Pedido não encontrado.' };
+      }
+
+      const alreadyPaid =
+        existing.status === 'Pago' ||
+        existing.status === 'Pagamento Aprovado' ||
+        existing.status === 'Em Separação' ||
+        existing.status === 'Produto Enviado' ||
+        existing.status === 'Produto Entregue';
+
+      if (alreadyPaid && (!details?.transactionNsu || existing.infinitePay?.transactionNsu)) {
+        return { ok: true, order: existing };
+      }
+
+      const nowIso = new Date().toISOString();
+      let updatedOrder: Order = existing;
+      const nextOrders = prev.orders.map((o) => {
+        if (o.id !== orderId) return o;
+        updatedOrder = {
+          ...o,
+          status: alreadyPaid ? o.status : ('Pago' as OrderStatus),
+          statusHistory: alreadyPaid
+            ? o.statusHistory
+            : buildUpdatedStatusHistory(o.statusHistory, 'Pago', o.createdAt),
+          infinitePay: {
+            ...(o.infinitePay || {}),
+            transactionNsu: details?.transactionNsu || o.infinitePay?.transactionNsu,
+            slug: details?.slug || o.infinitePay?.slug,
+            captureMethod: details?.captureMethod || o.infinitePay?.captureMethod,
+            receiptUrl: details?.receiptUrl || o.infinitePay?.receiptUrl,
+            paidAt: o.infinitePay?.paidAt || nowIso,
+          },
+        };
+        return updatedOrder;
+      });
+
+      const nextState: StoreState = { ...prev, orders: nextOrders };
+      markImmediateCloudMutation(true);
+      immediateNotifyRef.current = false;
+      storeRef.current = nextState;
+      try {
+        localStorage.setItem(STORE_STORAGE_KEY, JSON.stringify(nextState));
+      } catch {
+        // Ignore storage quota warnings gracefully
+      }
+      setStore(nextState);
+      const syncRes = await enqueueCloudUpsert(nextState, { notify: true });
+      return { ok: syncRes.ok, order: updatedOrder, error: syncRes.error };
+    },
+    [enqueueCloudUpsert, markImmediateCloudMutation]
   );
 
   const updateOrderStatus = useCallback(
@@ -875,6 +986,7 @@ export function useStore() {
     removeFromCart,
     clearCart,
     createOrder,
+    markOrderAsPaid,
     updateOrderStatus,
     updateOrderTracking,
     updateOrderFulfillment,

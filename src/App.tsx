@@ -1,5 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ArrowUpDown, CheckCircle2, Cloud, RotateCcw, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  ArrowUpDown,
+  CheckCircle2,
+  Cloud,
+  ExternalLink,
+  Loader2,
+  RotateCcw,
+  ShoppingBag,
+  X,
+} from 'lucide-react';
 import { AdminPanel } from './components/AdminPanel';
 import { CartCheckoutDrawer } from './components/CartCheckoutDrawer';
 import { CustomerAccountView } from './components/CustomerAccountView';
@@ -11,7 +21,7 @@ import { ProductCard } from './components/ProductCard';
 import { ProductDetailModal } from './components/ProductDetailModal';
 import { useStore } from './hooks/useStore';
 import { Department, Product, ShippingMethod, ViaCepAddress } from './types/store';
-import { calcPixPrice, roundCurrency } from './utils/formatters';
+import { calcPixPrice, formatBRL, roundCurrency } from './utils/formatters';
 
 type SortOption = 'featured' | 'price_asc' | 'price_desc' | 'discount';
 
@@ -45,6 +55,7 @@ export default function App() {
     removeFromCart,
     clearCart,
     createOrder,
+    markOrderAsPaid,
     updateOrderStatus,
     updateOrderTracking,
     updateOrderFulfillment,
@@ -71,6 +82,172 @@ export default function App() {
   const [shippingCep, setShippingCep] = useState('');
   const [viaCepAddress, setViaCepAddress] = useState<ViaCepAddress | null>(null);
   const [selectedShippingMethod, setSelectedShippingMethod] = useState<ShippingMethod>('economic');
+
+  const [paymentReturnModal, setPaymentReturnModal] = useState<{
+    open: boolean;
+    orderId: string;
+    phase: 'verifying' | 'approved' | 'pending';
+    captureMethod?: string;
+    receiptUrl?: string;
+    transactionNsu?: string;
+    slug?: string;
+    message?: string;
+  } | null>(null);
+  const handledReturnRef = useRef(false);
+
+  const verifyReturnedPayment = useCallback(
+    async (params: {
+      orderId: string;
+      transactionNsu?: string;
+      slug?: string;
+      captureMethod?: string;
+      receiptUrl?: string;
+    }) => {
+      const refreshedStore = await refreshFromCloud();
+      const activeStore = refreshedStore || store;
+
+      let verifiedPaid = false;
+      let resolvedCaptureMethod = params.captureMethod || '';
+
+      if (params.transactionNsu && params.slug) {
+        try {
+          const resp = await fetch('/api/infinitepay-checkout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'verify',
+              handle: activeStore.payment.infinitePayHandle || 'bth_solar_distribuidora',
+              order_nsu: params.orderId,
+              transaction_nsu: params.transactionNsu,
+              slug: params.slug,
+            }),
+          });
+          if (resp.ok) {
+            const check = (await resp.json()) as {
+              paid?: boolean;
+              capture_method?: string;
+            };
+            if (check.paid) {
+              verifiedPaid = true;
+            }
+            if (check.capture_method) {
+              resolvedCaptureMethod = check.capture_method;
+            }
+          }
+        } catch {
+          // Will fall back to checking order status synced via webhook in Supabase
+        }
+      }
+
+      if (verifiedPaid) {
+        await markOrderAsPaid(params.orderId, {
+          transactionNsu: params.transactionNsu,
+          slug: params.slug,
+          captureMethod: resolvedCaptureMethod,
+          receiptUrl: params.receiptUrl,
+        });
+        setPaymentReturnModal({
+          open: true,
+          orderId: params.orderId,
+          phase: 'approved',
+          captureMethod: resolvedCaptureMethod,
+          receiptUrl: params.receiptUrl,
+          transactionNsu: params.transactionNsu,
+          slug: params.slug,
+        });
+        return;
+      }
+
+      // Check if webhook already updated the order status in Supabase
+      const latestOrder = activeStore.orders.find((o) => o.id === params.orderId);
+      const isAlreadyPaidInCloud =
+        latestOrder &&
+        ['Pago', 'Pagamento Aprovado', 'Em Separação', 'Produto Enviado', 'Produto Entregue'].includes(
+          latestOrder.status
+        );
+
+      if (isAlreadyPaidInCloud) {
+        setPaymentReturnModal({
+          open: true,
+          orderId: params.orderId,
+          phase: 'approved',
+          captureMethod: latestOrder.infinitePay?.captureMethod || resolvedCaptureMethod,
+          receiptUrl: latestOrder.infinitePay?.receiptUrl || params.receiptUrl,
+          transactionNsu: params.transactionNsu,
+          slug: params.slug,
+        });
+      } else {
+        setPaymentReturnModal({
+          open: true,
+          orderId: params.orderId,
+          phase: 'pending',
+          captureMethod: resolvedCaptureMethod,
+          receiptUrl: params.receiptUrl,
+          transactionNsu: params.transactionNsu,
+          slug: params.slug,
+          message:
+            'Aguardando confirmação automática da InfinitePay no banco de dados. Isso leva apenas alguns segundos.',
+        });
+      }
+    },
+    [markOrderAsPaid, refreshFromCloud, store]
+  );
+
+  useEffect(() => {
+    if (handledReturnRef.current || typeof window === 'undefined') return;
+    const qs = new URLSearchParams(window.location.search);
+    const pagamento = qs.get('pagamento');
+    const orderId = (qs.get('order_nsu') || qs.get('pedido') || '').trim();
+    const transactionNsu = (qs.get('transaction_nsu') || '').trim();
+    const slug = (qs.get('slug') || qs.get('invoice_slug') || '').trim();
+    const captureMethod = (qs.get('capture_method') || '').trim();
+    const rawReceipt = (qs.get('receipt_url') || '').trim();
+    const receiptUrl = /^https:\/\//i.test(rawReceipt) ? rawReceipt : '';
+
+    if ((pagamento === 'sucesso' || (orderId && (transactionNsu || slug))) && orderId) {
+      handledReturnRef.current = true;
+      clearCart();
+      setPaymentReturnModal({
+        open: true,
+        orderId,
+        phase: 'verifying',
+        captureMethod,
+        receiptUrl,
+        transactionNsu,
+        slug,
+      });
+      void verifyReturnedPayment({
+        orderId,
+        transactionNsu,
+        slug,
+        captureMethod,
+        receiptUrl,
+      });
+    }
+  }, [clearCart, verifyReturnedPayment]);
+
+  // Keep open return confirmation modal synced with latest cloud order status
+  useEffect(() => {
+    if (!paymentReturnModal?.open || paymentReturnModal.phase === 'approved') return;
+    const match = store.orders.find((o) => o.id === paymentReturnModal.orderId);
+    if (
+      match &&
+      ['Pago', 'Pagamento Aprovado', 'Em Separação', 'Produto Enviado', 'Produto Entregue'].includes(
+        match.status
+      )
+    ) {
+      setPaymentReturnModal((prev) =>
+        prev
+          ? {
+              ...prev,
+              phase: 'approved',
+              captureMethod: match.infinitePay?.captureMethod || prev.captureMethod,
+              receiptUrl: match.infinitePay?.receiptUrl || prev.receiptUrl,
+            }
+          : null
+      );
+    }
+  }, [store.orders, paymentReturnModal]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -453,6 +630,162 @@ export default function App() {
         onCreateOrder={createOrder}
         onRefreshCloud={refreshFromCloud}
       />
+
+      {paymentReturnModal?.open &&
+        (() => {
+          const returnedOrder = store.orders.find(
+            (o) => o.id === paymentReturnModal.orderId
+          );
+          const closeReturnModal = () => {
+            setPaymentReturnModal(null);
+            try {
+              window.history.replaceState({}, '', '/');
+            } catch {
+              // Ignore history replacement warnings
+            }
+          };
+
+          return (
+            <div
+              className="fixed inset-0 z-[95] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Confirmação de Pagamento"
+              onClick={closeReturnModal}
+            >
+              <div
+                className="w-full max-w-md bg-[#161A20] border border-[#272D38] rounded-md p-6 shadow-2xl space-y-4 text-center"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {paymentReturnModal.phase === 'verifying' ? (
+                  <>
+                    <Loader2 className="w-11 h-11 text-[#FF6500] animate-spin mx-auto" />
+                    <h3 className="font-display font-extrabold text-2xl uppercase tracking-wider text-white">
+                      Confirmando Pagamento...
+                    </h3>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      Validando o retorno do pedido{' '}
+                      <strong className="font-mono-num text-white">
+                        #{paymentReturnModal.orderId}
+                      </strong>{' '}
+                      junto à InfinitePay e ao Supabase.
+                    </p>
+                  </>
+                ) : paymentReturnModal.phase === 'approved' ? (
+                  <>
+                    <CheckCircle2 className="w-12 h-12 text-[#00E676] mx-auto" />
+                    <h3 className="font-display font-extrabold text-2xl uppercase tracking-wider text-white">
+                      Pagamento Aprovado!
+                    </h3>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      Seu pedido{' '}
+                      <strong className="font-mono-num text-white">
+                        #{paymentReturnModal.orderId}
+                      </strong>{' '}
+                      foi confirmado com status <strong className="text-[#00E676]">Pago</strong>.
+                      Em breve você receberá a NF-e e o código de rastreio por e-mail.
+                    </p>
+                    {returnedOrder && (
+                      <div className="p-3 rounded bg-[#0B0D10] border border-[#272D38] text-xs space-y-1">
+                        <div className="text-slate-400">
+                          Valor Total:{' '}
+                          <strong className="font-mono-num text-[#00E676]">
+                            {formatBRL(returnedOrder.totalAmount)}
+                          </strong>
+                        </div>
+                        {paymentReturnModal.captureMethod && (
+                          <div className="text-slate-400">
+                            Meio:{' '}
+                            <strong className="text-white uppercase">
+                              {paymentReturnModal.captureMethod === 'pix'
+                                ? 'PIX (InfinitePay)'
+                                : paymentReturnModal.captureMethod === 'credit_card'
+                                ? 'Cartão de Crédito (InfinitePay)'
+                                : paymentReturnModal.captureMethod}
+                            </strong>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="flex flex-col gap-2 pt-1">
+                      {paymentReturnModal.receiptUrl && (
+                        <a
+                          href={paymentReturnModal.receiptUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full h-10 rounded bg-[#0B0D10] border border-[#272D38] hover:border-slate-500 text-xs font-semibold text-white inline-flex items-center justify-center gap-1.5"
+                        >
+                          <ExternalLink className="w-4 h-4 text-[#00E676]" />
+                          <span>Ver Comprovante InfinitePay</span>
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeReturnModal();
+                          openAccount();
+                        }}
+                        className="w-full h-11 rounded font-display font-extrabold text-sm uppercase tracking-wider text-white inline-flex items-center justify-center gap-2"
+                        style={{ backgroundColor: store.visual.accentColor || '#FF6500' }}
+                      >
+                        <ShoppingBag className="w-4 h-4" />
+                        <span>Acompanhar em Meus Pedidos</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={closeReturnModal}
+                        className="w-full h-10 rounded border border-[#272D38] text-xs font-semibold text-slate-300 hover:text-white"
+                      >
+                        Continuar Navegando na Loja
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <AlertCircle className="w-11 h-11 text-amber-400 mx-auto" />
+                    <h3 className="font-display font-extrabold text-2xl uppercase tracking-wider text-white">
+                      Pedido #{paymentReturnModal.orderId} Registrado
+                    </h3>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      {paymentReturnModal.message ||
+                        'Assim que a InfinitePay confirmar o pagamento, o status será atualizado automaticamente para Pago.'}
+                    </p>
+                    <div className="flex flex-col gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentReturnModal((prev) =>
+                            prev ? { ...prev, phase: 'verifying' } : null
+                          );
+                          void verifyReturnedPayment({
+                            orderId: paymentReturnModal.orderId,
+                            transactionNsu: paymentReturnModal.transactionNsu,
+                            slug: paymentReturnModal.slug,
+                            captureMethod: paymentReturnModal.captureMethod,
+                            receiptUrl: paymentReturnModal.receiptUrl,
+                          });
+                        }}
+                        className="w-full h-11 rounded font-display font-extrabold text-sm uppercase tracking-wider text-white inline-flex items-center justify-center gap-2"
+                        style={{ backgroundColor: store.visual.accentColor || '#FF6500' }}
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        <span>Verificar Confirmação Agora</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={closeReturnModal}
+                        className="w-full h-10 rounded border border-[#272D38] text-xs font-semibold text-slate-300 hover:text-white"
+                      >
+                        Fechar
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
       {cloudToast}
     </div>
   );

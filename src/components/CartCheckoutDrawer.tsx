@@ -63,8 +63,8 @@ interface CartCheckoutDrawerProps {
   onUpdateQty: (productId: string, qty: number) => void;
   onRemoveItem: (productId: string) => void;
   onClearCart: () => void;
-  onCreateOrder: (order: Order) => void;
-  onRefreshCloud?: () => Promise<void> | void;
+  onCreateOrder: (order: Order) => Promise<{ ok: boolean; error?: string }> | void;
+  onRefreshCloud?: () => Promise<unknown> | void;
 }
 
 type DrawerStep = 'cart' | 'checkout' | 'confirmed';
@@ -87,12 +87,15 @@ export function CartCheckoutDrawer({
   onCreateOrder,
   onRefreshCloud,
 }: CartCheckoutDrawerProps) {
+  const infinitePayActive = store.payment.infinitePayEnabled ?? true;
   const [step, setStep] = useState<DrawerStep>('cart');
   const [couponInput, setCouponInput] = useState('');
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
   const [couponFeedback, setCouponFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('pix');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
+    infinitePayActive ? 'infinitepay' : 'pix'
+  );
   const [selectedInstallments, setSelectedInstallments] = useState<number>(1);
 
   const [customer, setCustomer] = useState<CustomerFiscalData>({
@@ -112,6 +115,8 @@ export function CartCheckoutDrawer({
   const [cepLoading, setCepLoading] = useState(false);
 
   const [confirmedOrder, setConfirmedOrder] = useState<Order | null>(null);
+  const [infinitePayRedirectUrl, setInfinitePayRedirectUrl] = useState('');
+  const [infinitePayError, setInfinitePayError] = useState('');
   const [showPixModalBox, setShowPixModalBox] = useState(false);
   const [copiedPix, setCopiedPix] = useState(false);
   const [copiedPixKey, setCopiedPixKey] = useState(false);
@@ -218,9 +223,12 @@ export function CartCheckoutDrawer({
 
   useEffect(() => {
     if (!store.payment.creditCardEnabled && paymentMethod === 'credit_card') {
+      setPaymentMethod(infinitePayActive ? 'infinitepay' : 'pix');
+    }
+    if (!infinitePayActive && paymentMethod === 'infinitepay') {
       setPaymentMethod('pix');
     }
-  }, [store.payment.creditCardEnabled, paymentMethod]);
+  }, [store.payment.creditCardEnabled, infinitePayActive, paymentMethod]);
 
   // Prefill NF-e form from logged-in customer if fields are still empty
   useEffect(() => {
@@ -364,15 +372,18 @@ export function CartCheckoutDrawer({
 
     submittingOrderRef.current = true;
     setIsSubmittingOrder(true);
+    setInfinitePayError('');
+    setInfinitePayRedirectUrl('');
 
     try {
+      const useInfinitePay = infinitePayActive && paymentMethod === 'infinitepay';
       const orderId = `BTH-${Date.now().toString().slice(-6)}`;
       const createdAt = new Date().toISOString();
       const newOrder: Order = {
         id: orderId,
         createdAt,
         customerId: currentCustomer?.id,
-        status: 'Pedido Realizado',
+        status: useInfinitePay ? 'Aguardando Pagamento' : 'Pedido Realizado',
         statusHistory: { 'Pedido Realizado': createdAt },
         trackingCode: '',
         nfeInfo: '',
@@ -399,20 +410,75 @@ export function CartCheckoutDrawer({
           paymentMethod === 'credit_card' ? activeInstallmentOption.installmentValue : finalTotal,
         totalAmount: finalTotal,
         customer: { ...customer },
+        infinitePay: useInfinitePay
+          ? {
+              handle: store.payment.infinitePayHandle || 'bth_solar_distribuidora',
+            }
+          : undefined,
       };
 
-      onCreateOrder(newOrder);
+      // 1. Save order first in Supabase (Aguardando Pagamento) & send order confirmation email
+      await onCreateOrder(newOrder);
 
       const shouldSendOrderEmail =
         store.email.emailVerificationEnabled &&
         (store.email.templates?.orderConfirmed?.enabled ?? true);
 
       await Promise.all([
-        new Promise((resolve) => setTimeout(resolve, 450)),
+        new Promise((resolve) => setTimeout(resolve, 350)),
         shouldSendOrderEmail
           ? sendOrderUpdateEmail(store.email, newOrder).catch(() => undefined)
           : Promise.resolve(),
       ]);
+
+      // 2. If InfinitePay is selected, create hosted checkout link and redirect automatically
+      if (useInfinitePay) {
+        try {
+          const checkoutResp = await fetch('/api/infinitepay-checkout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              orderId: newOrder.id,
+              handle: store.payment.infinitePayHandle || 'bth_solar_distribuidora',
+              items: enrichedItems.map((i) => ({
+                description: i.product.name,
+                quantity: i.quantity,
+                unitPrice: i.product.basePrice,
+              })),
+              shippingCost,
+              discount: couponDiscountAmount,
+              customer: {
+                name: customer.fullName,
+                email: customer.email,
+                phone_number: customer.whatsapp,
+              },
+            }),
+          });
+
+          const checkoutData = (await checkoutResp.json().catch(() => ({}))) as {
+            ok?: boolean;
+            url?: string;
+            error?: string;
+          };
+
+          if (checkoutResp.ok && checkoutData.url) {
+            onClearCart();
+            setConfirmedOrder(newOrder);
+            setInfinitePayRedirectUrl(checkoutData.url);
+            setStep('confirmed');
+            window.location.href = checkoutData.url;
+            return;
+          }
+
+          setInfinitePayError(
+            checkoutData.error ||
+              `Não foi possível gerar o link InfinitePay (HTTP ${checkoutResp.status}).`
+          );
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Erro de conexão';
+          setInfinitePayError(`Falha ao chamar /api/infinitepay-checkout: ${msg}`);
+        }
+      }
 
       onClearCart();
       setConfirmedOrder(newOrder);
@@ -428,6 +494,8 @@ export function CartCheckoutDrawer({
     if (submittingOrderRef.current || isSubmittingOrder) return;
     setStep('cart');
     setConfirmedOrder(null);
+    setInfinitePayRedirectUrl('');
+    setInfinitePayError('');
     setShowPixModalBox(false);
     onClose();
   };
@@ -680,6 +748,38 @@ export function CartCheckoutDrawer({
                 </p>
 
                 <div className="grid grid-cols-1 gap-2">
+                  {infinitePayActive && (
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod('infinitepay')}
+                      className={`p-3 rounded border flex items-center justify-between text-left transition-colors ${
+                        paymentMethod === 'infinitepay'
+                          ? 'bg-[#0B0D10] border-[#FF6500]'
+                          : 'bg-[#0B0D10]/50 border-[#272D38] hover:border-slate-600'
+                      }`}
+                    >
+                      <div className="space-y-0.5 pr-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-bold text-white">
+                            InfinitePay (PIX ou Cartão até 12x)
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-[#FF6500]/15 border border-[#FF6500]/40 text-[10px] font-bold uppercase text-[#FF6500]">
+                            Checkout Seguro
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          Escolha PIX ou Cartão de Crédito na página oficial InfinitePay
+                        </div>
+                        <div className="pt-1">
+                          <CardBrandsStrip brands={store.payment.acceptedCardBrands} compact />
+                        </div>
+                      </div>
+                      <span className="text-sm font-mono-num font-bold text-white shrink-0">
+                        {formatBRL(subtotalBase)}
+                      </span>
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     onClick={() => setPaymentMethod('pix')}
@@ -700,7 +800,7 @@ export function CartCheckoutDrawer({
                     </span>
                   </button>
 
-                  {store.payment.creditCardEnabled && (
+                  {!infinitePayActive && store.payment.creditCardEnabled && (
                     <>
                       <button
                         type="button"
@@ -963,6 +1063,8 @@ export function CartCheckoutDrawer({
                       <strong className="text-white">
                         {paymentMethod === 'pix'
                           ? 'PIX'
+                          : paymentMethod === 'infinitepay'
+                          ? 'InfinitePay (PIX ou Cartão até 12x)'
                           : `Cartão ${activeInstallmentOption.count}x`}
                       </strong>
                     </span>
@@ -1086,9 +1188,38 @@ export function CartCheckoutDrawer({
                   </div>
                 )}
 
+              {infinitePayError && (
+                <div className="p-3 rounded bg-red-950/60 border border-red-500/60 text-xs text-red-200 leading-relaxed">
+                  <strong>Aviso InfinitePay:</strong> {infinitePayError}
+                </div>
+              )}
+
               {/* Hybrid Buttons */}
               <div className="grid grid-cols-1 gap-3">
-                {confirmedOrder.paymentMethod === 'credit_card' ? (
+                {confirmedOrder.paymentMethod === 'infinitepay' ? (
+                  <>
+                    {infinitePayRedirectUrl && (
+                      <a
+                        href={infinitePayRedirectUrl}
+                        className="w-full h-12 rounded font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-95"
+                        style={{ backgroundColor: accentColor }}
+                      >
+                        <ExternalLink className="w-5 h-5" />
+                        <span>IR PARA PAGAMENTO INFINITEPAY (PIX / CARTÃO)</span>
+                      </a>
+                    )}
+
+                    <a
+                      href={whatsappUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full h-12 rounded bg-[#00E676] hover:bg-[#00cf6a] font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-[#0B0D10] flex items-center justify-center gap-2 transition-colors"
+                    >
+                      <MessageCircle className="w-5 h-5" />
+                      <span>ENVIAR PEDIDO NO WHATSAPP</span>
+                    </a>
+                  </>
+                ) : confirmedOrder.paymentMethod === 'credit_card' ? (
                   <>
                     {externalPayUrl && (
                       <a
@@ -1232,10 +1363,18 @@ export function CartCheckoutDrawer({
         {step !== 'confirmed' && enrichedItems.length > 0 && (
           <div className="p-5 bg-[#161A20] border-t border-[#272D38] space-y-3">
             <div className="space-y-1 text-xs font-mono-num">
-              <div className="flex justify-between text-slate-300">
-                <span>Subtotal ({paymentMethod === 'pix' ? 'PIX' : 'Cartão/Base'})</span>
-                <span>{formatBRL(itemsSubtotalAfterPayment)}</span>
-              </div>
+                <div className="flex justify-between text-slate-300">
+                  <span>
+                    Subtotal (
+                    {paymentMethod === 'pix'
+                      ? 'PIX'
+                      : paymentMethod === 'infinitepay'
+                      ? 'InfinitePay'
+                      : 'Cartão/Base'}
+                    )
+                  </span>
+                  <span>{formatBRL(itemsSubtotalAfterPayment)}</span>
+                </div>
               {couponDiscountAmount > 0 && (
                 <div className="flex justify-between text-[#00E676]">
                   <span>Cupom ({activeCoupon?.code})</span>
@@ -1278,7 +1417,7 @@ export function CartCheckoutDrawer({
                 form="nfe-checkout-form"
                 disabled={isSubmittingOrder}
                 aria-busy={isSubmittingOrder}
-                className={`w-full h-12 rounded font-display font-extrabold text-base uppercase tracking-wider text-white flex items-center justify-center gap-2.5 border transition-all ${
+                className={`w-full h-12 rounded font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-white flex items-center justify-center gap-2.5 border transition-all ${
                   isSubmittingOrder
                     ? 'cursor-not-allowed bg-[#161A20] border-[#FF6500]'
                     : 'border-transparent hover:opacity-95'
@@ -1291,7 +1430,15 @@ export function CartCheckoutDrawer({
                     aria-hidden="true"
                   />
                 )}
-                <span>{isSubmittingOrder ? 'PROCESSANDO...' : 'FINALIZAR PEDIDO'}</span>
+                <span>
+                  {isSubmittingOrder
+                    ? paymentMethod === 'infinitepay'
+                      ? 'REDIRECIONANDO PARA INFINITEPAY...'
+                      : 'PROCESSANDO...'
+                    : paymentMethod === 'infinitepay'
+                    ? 'PAGAR COM INFINITEPAY (PIX OU CARTÃO)'
+                    : 'FINALIZAR PEDIDO'}
+                </span>
               </button>
             )}
           </div>

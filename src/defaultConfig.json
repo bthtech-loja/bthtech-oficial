@@ -18,5 +18,9 @@
     "anonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl6amVsbXJvaWtsZWR1ZGRlbnRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU3ODk5NjAsImV4cCI6MjExMTM2NTk2MH0.g82yYkBMIqosqI_JkGlU4zPMkD3dh72rOBCWUFRIqkk",
     "table": "bthtech_store",
     "rowId": "main_store"
+  },
+  "infinitePay": {
+    "enabled": true,
+    "handle": "bth_solar_distribuidora"
   }
 }

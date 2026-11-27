@@ -119,6 +119,11 @@ function getPaymentMethodLabel(order: Order): string {
   if (order.paymentMethod === 'pix') {
     return 'PIX';
   }
+  if (order.paymentMethod === 'infinitepay') {
+    if (order.infinitePay?.captureMethod === 'pix') return 'PIX (InfinitePay)';
+    if (order.infinitePay?.captureMethod === 'credit_card') return 'Cartão de Crédito (InfinitePay)';
+    return 'InfinitePay (PIX ou Cartão)';
+  }
   if (order.paymentMethod === 'credit_card') {
     return `Cartão de Crédito ${order.installments}x`;
   }
@@ -371,7 +376,8 @@ function getBadgeLabelForOrderTemplate(
     return order.status === 'Produto Entregue' ? 'Produto Entregue' : 'Pedido Enviado';
   }
   if (order.status === 'Em Separação') return 'Em Separação';
-  if (order.status === 'Pagamento Aprovado') return 'Pagamento Aprovado';
+  if (order.status === 'Pago' || order.status === 'Pagamento Aprovado') return 'Pagamento Aprovado';
+  if (order.status === 'Aguardando Pagamento') return 'Aguardando Pagamento';
   return 'Pedido Confirmado';
 }
 

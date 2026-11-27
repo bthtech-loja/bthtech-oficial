@@ -225,6 +225,8 @@ export const INITIAL_STORE_STATE: StoreState = {
     pixBank: 'Banco Inter (077)',
     pixQrCodeImageUrl: '',
     defaultExternalCheckoutUrl: 'https://link.mercadopago.com.br/',
+    infinitePayEnabled: defaultConfig.infinitePay?.enabled ?? true,
+    infinitePayHandle: defaultConfig.infinitePay?.handle || 'bth_solar_distribuidora',
   },
   shipping: {
     originCep: '85801-000',

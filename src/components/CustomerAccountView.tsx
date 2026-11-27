@@ -89,6 +89,11 @@ function formatShortDateTime(iso?: string): string {
 
 function getPaymentLabel(order: Order): string {
   if (order.paymentMethod === 'pix') return 'PIX';
+  if (order.paymentMethod === 'infinitepay') {
+    if (order.infinitePay?.captureMethod === 'pix') return 'PIX (InfinitePay)';
+    if (order.infinitePay?.captureMethod === 'credit_card') return 'Cartão de Crédito (InfinitePay)';
+    return 'InfinitePay (PIX ou Cartão)';
+  }
   if (order.paymentMethod === 'credit_card') {
     return `Cartão de Crédito (${order.installments}x de ${formatBRL(order.installmentValue)})`;
   }
@@ -97,9 +102,15 @@ function getPaymentLabel(order: Order): string {
 
 function OrderTimeline({ order }: { order: Order }) {
   const isCanceled = order.status === 'Cancelado';
+  const mappedStage: OrderTimelineStage =
+    order.status === 'Aguardando Pagamento'
+      ? 'Pedido Realizado'
+      : order.status === 'Pago'
+      ? 'Pagamento Aprovado'
+      : (order.status as OrderTimelineStage);
   const activeStageIndex = isCanceled
     ? -1
-    : ORDER_TIMELINE_STAGES.indexOf(order.status as OrderTimelineStage);
+    : ORDER_TIMELINE_STAGES.indexOf(mappedStage);
 
   if (isCanceled) {
     return (
