@@ -1,3 +1,4 @@
+import defaultConfig from '../defaultConfig.json';
 import { INITIAL_STORE_STATE } from '../data/initialStore';
 import {
   EmailConfig,
@@ -150,11 +151,34 @@ function resolveNfeLinkUrl(nfeRaw: string): string {
   return 'https://bthtech.com.br/minha-conta';
 }
 
+function resolveEffectiveEmailConfig(config: EmailConfig): EmailConfig {
+  const fallback = defaultConfig.emailConfig;
+  return {
+    ...config,
+    officialEmail:
+      (config.officialEmail || '').trim() ||
+      (fallback?.officialEmail || '').trim() ||
+      'contato.bthtech@gmail.com',
+    gmailScriptUrl:
+      (config.gmailScriptUrl || '').trim() ||
+      (fallback?.gmailScriptUrl || '').trim(),
+    emailLogoUrl:
+      (config.emailLogoUrl || '').trim() ||
+      (fallback?.emailLogoUrl || '').trim() ||
+      'https://googleusercontent.com',
+    emailVerificationEnabled:
+      typeof config.emailVerificationEnabled === 'boolean'
+        ? config.emailVerificationEnabled
+        : Boolean(fallback?.emailVerificationEnabled),
+  };
+}
+
 function validateScriptAndRecipient(
   config: EmailConfig,
   toEmail: string
-): { ok: true; url: string; to: string } | { ok: false; message: string } {
-  const scriptUrl = (config.gmailScriptUrl || '').trim();
+): { ok: true; url: string; to: string; effectiveConfig: EmailConfig } | { ok: false; message: string } {
+  const effectiveConfig = resolveEffectiveEmailConfig(config);
+  const scriptUrl = (effectiveConfig.gmailScriptUrl || '').trim();
   const cleanEmail = (toEmail || '').trim();
 
   if (!scriptUrl) {
@@ -185,7 +209,7 @@ function validateScriptAndRecipient(
     };
   }
 
-  return { ok: true, url: parsedUrl.toString(), to: cleanEmail };
+  return { ok: true, url: parsedUrl.toString(), to: cleanEmail, effectiveConfig };
 }
 
 async function postToGmailScript(
@@ -824,8 +848,8 @@ export async function sendVerificationEmail(
   const html_body = buildOtpEmailHtml({
     customerName: params.user_name,
     verificationCode: params.verification_code,
-    logoUrl: config.emailLogoUrl || 'https://googleusercontent.com',
-    officialEmail: config.officialEmail,
+    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://googleusercontent.com',
+    officialEmail: check.effectiveConfig.officialEmail,
     template,
   });
 
@@ -877,7 +901,11 @@ export async function sendOrderTemplateEmail(
     return { ok: false, message: check.message };
   }
 
-  const vars = getOrderVars(order, config.emailLogoUrl, config.officialEmail);
+  const vars = getOrderVars(
+    order,
+    check.effectiveConfig.emailLogoUrl,
+    check.effectiveConfig.officialEmail
+  );
   const subject =
     order.status === 'Cancelado'
       ? `Atualização do Pedido #${order.id} — Cancelado | BTHTECH`
@@ -887,8 +915,8 @@ export async function sendOrderTemplateEmail(
     order,
     templateKey,
     template,
-    logoUrl: config.emailLogoUrl || 'https://googleusercontent.com',
-    officialEmail: config.officialEmail,
+    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://googleusercontent.com',
+    officialEmail: check.effectiveConfig.officialEmail,
   });
 
   const payload: GmailScriptPayload = {
@@ -1056,8 +1084,8 @@ export async function sendPasswordResetEmail(
   const html_body = buildPasswordResetEmailHtml({
     customerName: params.customerName,
     resetCode: code,
-    logoUrl: config.emailLogoUrl || 'https://googleusercontent.com',
-    officialEmail: config.officialEmail,
+    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://googleusercontent.com',
+    officialEmail: check.effectiveConfig.officialEmail,
   });
 
   const dispatch = await postToGmailScript(check.url, {

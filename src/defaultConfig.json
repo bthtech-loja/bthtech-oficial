@@ -1,0 +1,8 @@
+{
+  "emailConfig": {
+    "officialEmail": "contato.bthtech@gmail.com",
+    "emailVerificationEnabled": true,
+    "gmailScriptUrl": "",
+    "emailLogoUrl": "https://googleusercontent.com"
+  }
+}

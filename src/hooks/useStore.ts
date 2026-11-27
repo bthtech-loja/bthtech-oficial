@@ -118,11 +118,15 @@ function normalizeEmailConfig(rawEmail: unknown): EmailConfig {
   return {
     ...defaults,
     ...emailObj,
+    officialEmail: (emailObj.officialEmail || '').trim() || defaults.officialEmail,
+    gmailScriptUrl: (emailObj.gmailScriptUrl || '').trim() || defaults.gmailScriptUrl,
     emailVerificationEnabled:
       typeof emailObj.emailVerificationEnabled === 'boolean'
         ? emailObj.emailVerificationEnabled
-        : Boolean(emailObj.emailJsEnabled),
-    emailLogoUrl: emailObj.emailLogoUrl || defaults.emailLogoUrl,
+        : typeof emailObj.emailJsEnabled === 'boolean'
+        ? emailObj.emailJsEnabled
+        : defaults.emailVerificationEnabled,
+    emailLogoUrl: (emailObj.emailLogoUrl || '').trim() || defaults.emailLogoUrl,
     templates: {
       verification: mergeTemplate('verification'),
       orderConfirmed: mergeTemplate('orderConfirmed'),

@@ -1,3 +1,4 @@
+import defaultConfig from '../defaultConfig.json';
 import { StoreState } from '../types/store';
 
 // Default flash sale end time: 18 hours from initial boot (persisted once saved)
@@ -258,10 +259,10 @@ export const INITIAL_STORE_STATE: StoreState = {
     storeCityState: 'Cascavel - PR',
   },
   email: {
-    officialEmail: 'contato.bthtech@gmail.com',
-    emailVerificationEnabled: false,
-    gmailScriptUrl: '',
-    emailLogoUrl: 'https://googleusercontent.com',
+    officialEmail: defaultConfig.emailConfig.officialEmail || 'contato.bthtech@gmail.com',
+    emailVerificationEnabled: defaultConfig.emailConfig.emailVerificationEnabled,
+    gmailScriptUrl: defaultConfig.emailConfig.gmailScriptUrl || '',
+    emailLogoUrl: defaultConfig.emailConfig.emailLogoUrl || 'https://googleusercontent.com',
     templates: {
       verification: {
         enabled: true,
