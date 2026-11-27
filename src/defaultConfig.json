@@ -1,4 +1,9 @@
 {
+  "fiscal": {
+    "corporateName": "BTHTECH HARDWARE E PERIFERICOS LTDA",
+    "cnpj": "33.279.307/0001-22",
+    "stateRegistration": ""
+  },
   "emailConfig": {
     "officialEmail": "contato.bthtech@gmail.com",
     "emailVerificationEnabled": true,

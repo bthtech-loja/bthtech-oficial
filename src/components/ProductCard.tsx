@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Heart, ShoppingCart } from 'lucide-react';
 import { PaymentConfig, Product } from '../types/store';
 import {
@@ -30,6 +31,14 @@ export function ProductCard({
   const pixDiscountPct = Math.max(0, Math.round(paymentConfig.pixDiscountPercent));
   const bestInstallment = getBestInstallmentSummary(product.basePrice, paymentConfig);
   const outOfStock = product.stock <= 0;
+  const [heartPulsing, setHeartPulsing] = useState(false);
+
+  const handleFavoriteClick = () => {
+    if (!onToggleFavorite) return;
+    setHeartPulsing(false);
+    requestAnimationFrame(() => setHeartPulsing(true));
+    onToggleFavorite(product.id);
+  };
 
   return (
     <article className="group flex flex-col justify-between bg-[#161A20] border border-[#272D38] hover:border-slate-500/80 rounded-md overflow-hidden transition-transform duration-150 hover:-translate-y-0.5">
@@ -63,7 +72,7 @@ export function ProductCard({
             {onToggleFavorite && (
               <button
                 type="button"
-                onClick={() => onToggleFavorite(product.id)}
+                onClick={handleFavoriteClick}
                 className={`absolute z-20 top-2.5 right-2.5 p-1.5 rounded-full border transition-colors ${
                   isFavorite
                     ? 'bg-rose-500/20 border-rose-500/60 text-rose-400'
@@ -72,7 +81,12 @@ export function ProductCard({
                 title={isFavorite ? 'Remover dos favoritos' : 'Salvar nos favoritos'}
                 aria-label={isFavorite ? 'Remover dos favoritos' : 'Salvar nos favoritos'}
               >
-                <Heart className={`w-4 h-4 ${isFavorite ? 'fill-current' : ''}`} />
+                <Heart
+                  onAnimationEnd={() => setHeartPulsing(false)}
+                  className={`w-4 h-4 transition-transform ${
+                    isFavorite ? 'fill-current' : ''
+                  } ${heartPulsing ? 'animate-heart-pulse' : ''}`}
+                />
               </button>
             )}
           </div>

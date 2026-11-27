@@ -249,9 +249,9 @@ export const INITIAL_STORE_STATE: StoreState = {
     cascavelMotoboyFee: 12.00,
   },
   fiscal: {
-    cnpj: '54.321.987/0001-45',
-    corporateName: 'BTHTECH HARDWARE E PERIFERICOS LTDA',
-    stateRegistration: '90876543-21',
+    cnpj: defaultConfig.fiscal.cnpj || '33.279.307/0001-22',
+    corporateName: defaultConfig.fiscal.corporateName || 'BTHTECH HARDWARE E PERIFERICOS LTDA',
+    stateRegistration: defaultConfig.fiscal.stateRegistration || '',
     whatsappNumber: '5545999999999',
     adminUsername: 'bthtech',
     adminPassword: 'Juliano@2510',

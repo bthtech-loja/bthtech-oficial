@@ -82,7 +82,10 @@ export function Footer({
         <div className="pt-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs text-slate-400">
           <div className="space-y-1">
             <p className="text-white font-semibold">
-              {fiscal.corporateName} · CNPJ: {fiscal.cnpj} · IE: {fiscal.stateRegistration}
+              {fiscal.corporateName} · CNPJ: {fiscal.cnpj}
+              {fiscal.stateRegistration?.trim()
+                ? ` · IE: ${fiscal.stateRegistration.trim()}`
+                : ''}
             </p>
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span>{fiscal.storeCityState}</span>
