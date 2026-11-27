@@ -9,5 +9,11 @@
     "emailVerificationEnabled": true,
     "gmailScriptUrl": "https://script.google.com/macros/s/AKfycbwK1zXLKBBZA47F3XWSROmIaRLOk_ggRIYoGpUjl4e3emFj_J0sIWRLg-ib3HoU3kNS/exec",
     "emailLogoUrl": "https://googleusercontent.com"
+  },
+  "supabase": {
+    "url": "https://yzjelmroikleduddentc.supabase.co",
+    "anonKey": "sb_publishable_9ip-3TaQYG9ENG3pw0d1Og_8ntFKBsq",
+    "table": "bthtech_store",
+    "rowId": "main_store"
   }
 }

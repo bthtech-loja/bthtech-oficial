@@ -64,6 +64,7 @@ interface CartCheckoutDrawerProps {
   onRemoveItem: (productId: string) => void;
   onClearCart: () => void;
   onCreateOrder: (order: Order) => void;
+  onRefreshCloud?: () => Promise<void> | void;
 }
 
 type DrawerStep = 'cart' | 'checkout' | 'confirmed';
@@ -84,6 +85,7 @@ export function CartCheckoutDrawer({
   onRemoveItem,
   onClearCart,
   onCreateOrder,
+  onRefreshCloud,
 }: CartCheckoutDrawerProps) {
   const [step, setStep] = useState<DrawerStep>('cart');
   const [couponInput, setCouponInput] = useState('');
@@ -1261,7 +1263,10 @@ export function CartCheckoutDrawer({
             {step === 'cart' ? (
               <button
                 type="button"
-                onClick={() => setStep('checkout')}
+                onClick={() => {
+                  void onRefreshCloud?.();
+                  setStep('checkout');
+                }}
                 className="w-full h-12 rounded font-display font-extrabold text-base uppercase tracking-wider text-white transition-opacity hover:opacity-95"
                 style={{ backgroundColor: accentColor }}
               >

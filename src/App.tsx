@@ -36,6 +36,7 @@ export default function App() {
     store,
     setStore,
     saveStoreChanges,
+    refreshFromCloud,
     cart,
     addToCart,
     updateCartQty,
@@ -82,9 +83,16 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (isAdminView || isCartOpen) {
+      void refreshFromCloud();
+    }
+  }, [isAdminView, isCartOpen, refreshFromCloud]);
+
   const openAdmin = () => {
     setIsAdminView(true);
     setIsAccountView(false);
+    void refreshFromCloud();
     try {
       window.history.pushState({}, '', '/admin');
     } catch {
@@ -404,6 +412,7 @@ export default function App() {
         onRemoveItem={removeFromCart}
         onClearCart={clearCart}
         onCreateOrder={createOrder}
+        onRefreshCloud={refreshFromCloud}
       />
     </div>
   );

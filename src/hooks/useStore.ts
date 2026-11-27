@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { INITIAL_STORE_STATE } from '../data/initialStore';
 import {
   CartItem,
@@ -12,6 +12,7 @@ import {
   StoreState,
 } from '../types/store';
 import { roundCurrency } from '../utils/formatters';
+import { fetchCloudStore, upsertCloudStore } from '../utils/supabaseSync';
 
 const STORE_STORAGE_KEY = 'bthtech_store_v1';
 const CART_STORAGE_KEY = 'bthtech_cart_v1';
@@ -147,30 +148,30 @@ function isTestJulianoCustomer(name?: string): boolean {
   return normalized === 'juliano fernandes';
 }
 
-function loadInitialStore(): StoreState {
-  try {
-    const raw = localStorage.getItem(STORE_STORAGE_KEY);
-    if (!raw) return INITIAL_STORE_STATE;
-    const parsed = JSON.parse(raw) as Partial<StoreState>;
-    const rawTopPromo = parsed.visual?.topPromoText;
-    const cleanedTopPromo =
-      typeof rawTopPromo === 'string'
-        ? rawTopPromo
-            .replace(/\s*•\s*NOTA FISCAL \(NF-e\) EM TODOS OS PEDIDOS/gi, '')
-            .replace(/NOTA FISCAL \(NF-e\) EM TODOS OS PEDIDOS\s*•?\s*/gi, '')
-            .trim()
-        : INITIAL_STORE_STATE.visual.topPromoText;
+function normalizeStoreState(
+  parsed: Partial<StoreState>,
+  options?: { cleanTestJuliano?: boolean }
+): StoreState {
+  const rawTopPromo = parsed.visual?.topPromoText;
+  const cleanedTopPromo =
+    typeof rawTopPromo === 'string'
+      ? rawTopPromo
+          .replace(/\s*•\s*NOTA FISCAL \(NF-e\) EM TODOS OS PEDIDOS/gi, '')
+          .replace(/NOTA FISCAL \(NF-e\) EM TODOS OS PEDIDOS\s*•?\s*/gi, '')
+          .trim()
+      : INITIAL_STORE_STATE.visual.topPromoText;
 
-    const resolvedNotices = Array.isArray(parsed.visual?.topPromoNotices)
-      ? parsed.visual.topPromoNotices
-      : cleanedTopPromo
-      ? cleanedTopPromo
-          .split('•')
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : INITIAL_STORE_STATE.visual.topPromoNotices;
+  const resolvedNotices = Array.isArray(parsed.visual?.topPromoNotices)
+    ? parsed.visual.topPromoNotices
+    : cleanedTopPromo
+    ? cleanedTopPromo
+        .split('•')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : INITIAL_STORE_STATE.visual.topPromoNotices;
 
-    let resolvedCustomers = Array.isArray(parsed.customers) ? parsed.customers : [];
+  let resolvedCustomers = Array.isArray(parsed.customers) ? parsed.customers : [];
+  if (options?.cleanTestJuliano) {
     const alreadyCleanedTestJuliano =
       localStorage.getItem(TEST_JULIANO_CLEANUP_KEY) === '1';
 
@@ -189,64 +190,73 @@ function loadInitialStore(): StoreState {
       }
       localStorage.setItem(TEST_JULIANO_CLEANUP_KEY, '1');
     }
+  }
 
-    return {
-      ...INITIAL_STORE_STATE,
-      ...parsed,
-      visual: {
-        ...INITIAL_STORE_STATE.visual,
-        ...(parsed.visual || {}),
-        topPromoText: cleanedTopPromo,
-        topPromoNotices: resolvedNotices,
-        banners:
-          Array.isArray(parsed.visual?.banners) && parsed.visual.banners.length > 0
-            ? parsed.visual.banners
-            : INITIAL_STORE_STATE.visual.banners,
+  return {
+    ...INITIAL_STORE_STATE,
+    ...parsed,
+    visual: {
+      ...INITIAL_STORE_STATE.visual,
+      ...(parsed.visual || {}),
+      topPromoText: cleanedTopPromo,
+      topPromoNotices: resolvedNotices,
+      banners:
+        Array.isArray(parsed.visual?.banners) && parsed.visual.banners.length > 0
+          ? parsed.visual.banners
+          : INITIAL_STORE_STATE.visual.banners,
+    },
+    payment: {
+      ...INITIAL_STORE_STATE.payment,
+      ...(parsed.payment || {}),
+      pixQrCodeImageUrl: parsed.payment?.pixQrCodeImageUrl || '',
+      installmentRates: {
+        ...INITIAL_STORE_STATE.payment.installmentRates,
+        ...(parsed.payment?.installmentRates || {}),
       },
-      payment: {
-        ...INITIAL_STORE_STATE.payment,
-        ...(parsed.payment || {}),
-        pixQrCodeImageUrl: parsed.payment?.pixQrCodeImageUrl || '',
-        installmentRates: {
-          ...INITIAL_STORE_STATE.payment.installmentRates,
-          ...(parsed.payment?.installmentRates || {}),
-        },
-        acceptedCardBrands: Array.isArray(parsed.payment?.acceptedCardBrands)
-          ? parsed.payment.acceptedCardBrands
-          : INITIAL_STORE_STATE.payment.acceptedCardBrands,
+      acceptedCardBrands: Array.isArray(parsed.payment?.acceptedCardBrands)
+        ? parsed.payment.acceptedCardBrands
+        : INITIAL_STORE_STATE.payment.acceptedCardBrands,
+    },
+    shipping: {
+      ...INITIAL_STORE_STATE.shipping,
+      ...(parsed.shipping || {}),
+      regionRates: {
+        ...INITIAL_STORE_STATE.shipping.regionRates,
+        ...(parsed.shipping?.regionRates || {}),
       },
-      shipping: {
-        ...INITIAL_STORE_STATE.shipping,
-        ...(parsed.shipping || {}),
-        regionRates: {
-          ...INITIAL_STORE_STATE.shipping.regionRates,
-          ...(parsed.shipping?.regionRates || {}),
-        },
-        expressRegionRates: {
-          ...INITIAL_STORE_STATE.shipping.expressRegionRates,
-          ...(parsed.shipping?.expressRegionRates || {}),
-        },
+      expressRegionRates: {
+        ...INITIAL_STORE_STATE.shipping.expressRegionRates,
+        ...(parsed.shipping?.expressRegionRates || {}),
       },
-      fiscal: { ...INITIAL_STORE_STATE.fiscal, ...(parsed.fiscal || {}) },
-      email: normalizeEmailConfig(parsed.email),
-      products:
-        Array.isArray(parsed.products) && parsed.products.length > 0
-          ? parsed.products.map((prod) => {
-              const def = INITIAL_STORE_STATE.products.find((d) => d.id === prod.id);
-              return {
-                ...prod,
-                costPrice:
-                  typeof prod.costPrice === 'number'
-                    ? prod.costPrice
-                    : def?.costPrice ?? roundCurrency((prod.basePrice || 0) * 0.65),
-                weightGrams: prod.weightGrams ?? def?.weightGrams ?? 400,
-              };
-            })
-          : INITIAL_STORE_STATE.products,
-      coupons: Array.isArray(parsed.coupons) ? parsed.coupons : INITIAL_STORE_STATE.coupons,
-      orders: normalizeOrders(parsed.orders),
-      customers: resolvedCustomers,
-    };
+    },
+    fiscal: { ...INITIAL_STORE_STATE.fiscal, ...(parsed.fiscal || {}) },
+    email: normalizeEmailConfig(parsed.email),
+    products:
+      Array.isArray(parsed.products) && parsed.products.length > 0
+        ? parsed.products.map((prod) => {
+            const def = INITIAL_STORE_STATE.products.find((d) => d.id === prod.id);
+            return {
+              ...prod,
+              costPrice:
+                typeof prod.costPrice === 'number'
+                  ? prod.costPrice
+                  : def?.costPrice ?? roundCurrency((prod.basePrice || 0) * 0.65),
+              weightGrams: prod.weightGrams ?? def?.weightGrams ?? 400,
+            };
+          })
+        : INITIAL_STORE_STATE.products,
+    coupons: Array.isArray(parsed.coupons) ? parsed.coupons : INITIAL_STORE_STATE.coupons,
+    orders: normalizeOrders(parsed.orders),
+    customers: resolvedCustomers,
+  };
+}
+
+function loadInitialStore(): StoreState {
+  try {
+    const raw = localStorage.getItem(STORE_STORAGE_KEY);
+    if (!raw) return INITIAL_STORE_STATE;
+    const parsed = JSON.parse(raw) as Partial<StoreState>;
+    return normalizeStoreState(parsed, { cleanTestJuliano: true });
   } catch {
     return INITIAL_STORE_STATE;
   }
@@ -276,18 +286,149 @@ export function useStore() {
   const [cart, setCart] = useState<CartItem[]>(loadInitialCart);
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(loadActiveCustomerId);
 
+  // Supabase cloud sync coordination refs (anti-overwrite & serialized uploads)
+  const cloudReadyRef = useRef(false);
+  const isApplyingCloudRef = useRef(false);
+  const lastCloudHashRef = useRef('');
+  const pendingUploadsCountRef = useRef(0);
+  const uploadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const debounceTimerRef = useRef<number | null>(null);
+  const immediateFlushRef = useRef(false);
+  const isRefreshingRef = useRef(false);
+
   const currentCustomer = useMemo(() => {
     if (!activeCustomerId) return null;
     return store.customers.find((c) => c.id === activeCustomerId) || null;
   }, [store.customers, activeCustomerId]);
 
-  useEffect(() => {
+  const enqueueCloudUpsert = useCallback((snapshot: StoreState) => {
+    const serialized = JSON.stringify(snapshot);
+    lastCloudHashRef.current = serialized;
+    pendingUploadsCountRef.current += 1;
+
+    uploadChainRef.current = uploadChainRef.current
+      .then(async () => {
+        await upsertCloudStore(snapshot);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        pendingUploadsCountRef.current = Math.max(0, pendingUploadsCountRef.current - 1);
+      });
+  }, []);
+
+  const refreshFromCloud = useCallback(async () => {
+    if (isRefreshingRef.current) return;
+    if (pendingUploadsCountRef.current > 0) return;
+
+    isRefreshingRef.current = true;
     try {
-      localStorage.setItem(STORE_STORAGE_KEY, JSON.stringify(store));
+      const res = await fetchCloudStore();
+      if (pendingUploadsCountRef.current > 0) return;
+
+      if (res.status === 'found') {
+        const normalized = normalizeStoreState(res.data);
+        const serialized = JSON.stringify(normalized);
+        if (serialized !== lastCloudHashRef.current || !cloudReadyRef.current) {
+          lastCloudHashRef.current = serialized;
+          isApplyingCloudRef.current = true;
+          setStore(normalized);
+          try {
+            localStorage.setItem(STORE_STORAGE_KEY, serialized);
+          } catch {
+            // Ignore storage quota warnings gracefully
+          }
+        }
+        cloudReadyRef.current = true;
+      } else if (res.status === 'empty') {
+        if (!cloudReadyRef.current) {
+          const seedState = normalizeStoreState(INITIAL_STORE_STATE);
+          const serialized = JSON.stringify(seedState);
+          lastCloudHashRef.current = serialized;
+          isApplyingCloudRef.current = true;
+          setStore(seedState);
+          try {
+            localStorage.setItem(STORE_STORAGE_KEY, serialized);
+          } catch {
+            // Ignore storage quota warnings gracefully
+          }
+          cloudReadyRef.current = true;
+          enqueueCloudUpsert(seedState);
+        }
+      }
+      // On 'error', keep cloudReadyRef unchanged to avoid overwriting existing cloud data
+    } finally {
+      isRefreshingRef.current = false;
+    }
+  }, [enqueueCloudUpsert]);
+
+  // Initial cloud load + 15s polling + window focus / visibility sync
+  useEffect(() => {
+    void refreshFromCloud();
+
+    const intervalId = window.setInterval(() => {
+      void refreshFromCloud();
+    }, 15000);
+
+    const handleFocus = () => {
+      void refreshFromCloud();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshFromCloud();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [refreshFromCloud]);
+
+  // Fast localStorage cache + automatic cloud persistence (guarded by cloudReadyRef)
+  useEffect(() => {
+    const serialized = JSON.stringify(store);
+    try {
+      localStorage.setItem(STORE_STORAGE_KEY, serialized);
     } catch {
       // Ignore storage quota warnings gracefully
     }
-  }, [store]);
+
+    if (isApplyingCloudRef.current) {
+      isApplyingCloudRef.current = false;
+      immediateFlushRef.current = false;
+      return;
+    }
+
+    if (!cloudReadyRef.current) {
+      immediateFlushRef.current = false;
+      return;
+    }
+
+    if (serialized === lastCloudHashRef.current) {
+      immediateFlushRef.current = false;
+      return;
+    }
+
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
+    if (immediateFlushRef.current) {
+      immediateFlushRef.current = false;
+      enqueueCloudUpsert(store);
+      return;
+    }
+
+    debounceTimerRef.current = window.setTimeout(() => {
+      debounceTimerRef.current = null;
+      enqueueCloudUpsert(store);
+    }, 250);
+  }, [store, enqueueCloudUpsert]);
 
   useEffect(() => {
     try {
@@ -347,6 +488,7 @@ export function useStore() {
   }, []);
 
   const createOrder = useCallback((order: Order) => {
+    immediateFlushRef.current = true;
     setStore((prev) => {
       const updatedProducts = prev.products.map((prod) => {
         const bought = order.items.find((i) => i.productId === prod.id);
@@ -365,6 +507,7 @@ export function useStore() {
   }, []);
 
   const updateOrderStatus = useCallback((orderId: string, status: OrderStatus) => {
+    immediateFlushRef.current = true;
     setStore((prev) => ({
       ...prev,
       orders: prev.orders.map((o) =>
@@ -380,6 +523,7 @@ export function useStore() {
   }, []);
 
   const updateOrderTracking = useCallback((orderId: string, trackingCode: string) => {
+    immediateFlushRef.current = true;
     setStore((prev) => ({
       ...prev,
       orders: prev.orders.map((o) =>
@@ -394,6 +538,7 @@ export function useStore() {
       updates: { status: OrderStatus; trackingCode: string; nfeInfo: string }
     ): Order | null => {
       let updatedOrder: Order | null = null;
+      immediateFlushRef.current = true;
       setStore((prev) => ({
         ...prev,
         orders: prev.orders.map((o) => {
@@ -414,6 +559,7 @@ export function useStore() {
   );
 
   const upsertProduct = useCallback((product: Product) => {
+    immediateFlushRef.current = true;
     setStore((prev) => {
       const exists = prev.products.some((p) => p.id === product.id);
       return {
@@ -426,6 +572,7 @@ export function useStore() {
   }, []);
 
   const deleteProduct = useCallback((productId: string) => {
+    immediateFlushRef.current = true;
     setStore((prev) => ({
       ...prev,
       products: prev.products.filter((p) => p.id !== productId),
@@ -473,6 +620,7 @@ export function useStore() {
         favoriteProductIds: [],
         createdAt: new Date().toISOString(),
       };
+      immediateFlushRef.current = true;
       setStore((prev) => ({
         ...prev,
         customers: [newCustomer, ...prev.customers],
@@ -488,6 +636,7 @@ export function useStore() {
   }, []);
 
   const updateCustomerAccount = useCallback((updated: CustomerAccount) => {
+    immediateFlushRef.current = true;
     setStore((prev) => ({
       ...prev,
       customers: prev.customers.map((c) => (c.id === updated.id ? updated : c)),
@@ -500,6 +649,7 @@ export function useStore() {
       if (!found) {
         return { ok: false, message: 'Conta não encontrada.' };
       }
+      immediateFlushRef.current = true;
       setStore((prev) => ({
         ...prev,
         customers: prev.customers.map((c) =>
@@ -515,6 +665,7 @@ export function useStore() {
   const toggleFavoriteProduct = useCallback(
     (productId: string): boolean => {
       if (!activeCustomerId) return false;
+      immediateFlushRef.current = true;
       setStore((prev) => ({
         ...prev,
         customers: prev.customers.map((c) => {
@@ -557,66 +708,9 @@ export function useStore() {
       if (!data || !Array.isArray(data.products) || !data.visual || !data.fiscal) {
         return { ok: false, message: 'Arquivo JSON inválido ou incompatível com o formato BTHTECH.' };
       }
-      const importedNotices = Array.isArray(data.visual?.topPromoNotices)
-        ? data.visual.topPromoNotices
-        : typeof data.visual?.topPromoText === 'string' && data.visual.topPromoText.trim()
-        ? data.visual.topPromoText
-            .split('•')
-            .map((s: string) => s.trim())
-            .filter(Boolean)
-        : INITIAL_STORE_STATE.visual.topPromoNotices;
-
-      setStore({
-        ...INITIAL_STORE_STATE,
-        ...data,
-        visual: {
-          ...INITIAL_STORE_STATE.visual,
-          ...(data.visual || {}),
-          topPromoNotices: importedNotices,
-          banners: Array.isArray(data.visual?.banners)
-            ? data.visual.banners
-            : INITIAL_STORE_STATE.visual.banners,
-        },
-        payment: {
-          ...INITIAL_STORE_STATE.payment,
-          ...(data.payment || {}),
-          pixQrCodeImageUrl: data.payment?.pixQrCodeImageUrl || '',
-          installmentRates: {
-            ...INITIAL_STORE_STATE.payment.installmentRates,
-            ...(data.payment?.installmentRates || {}),
-          },
-          acceptedCardBrands: Array.isArray(data.payment?.acceptedCardBrands)
-            ? data.payment.acceptedCardBrands
-            : INITIAL_STORE_STATE.payment.acceptedCardBrands,
-        },
-        shipping: {
-          ...INITIAL_STORE_STATE.shipping,
-          ...(data.shipping || {}),
-          regionRates: {
-            ...INITIAL_STORE_STATE.shipping.regionRates,
-            ...(data.shipping?.regionRates || {}),
-          },
-          expressRegionRates: {
-            ...INITIAL_STORE_STATE.shipping.expressRegionRates,
-            ...(data.shipping?.expressRegionRates || {}),
-          },
-        },
-        fiscal: { ...INITIAL_STORE_STATE.fiscal, ...(data.fiscal || {}) },
-        email: normalizeEmailConfig(data.email),
-        products: data.products.map((prod: Product) => {
-          const def = INITIAL_STORE_STATE.products.find((d) => d.id === prod.id);
-          return {
-            ...prod,
-            costPrice:
-              typeof prod.costPrice === 'number'
-                ? prod.costPrice
-                : def?.costPrice ?? roundCurrency((prod.basePrice || 0) * 0.65),
-            weightGrams: prod.weightGrams ?? def?.weightGrams ?? 400,
-          };
-        }),
-        orders: normalizeOrders(data.orders),
-        customers: Array.isArray(data.customers) ? data.customers : [],
-      });
+      const imported = normalizeStoreState(data);
+      immediateFlushRef.current = true;
+      setStore(imported);
       return { ok: true, message: 'Configurações, produtos, clientes e pedidos restaurados com sucesso!' };
     } catch {
       return { ok: false, message: 'Erro ao ler o arquivo JSON. Verifique se o arquivo está íntegro.' };
@@ -628,8 +722,15 @@ export function useStore() {
       const target = overrideStore ?? store;
       try {
         localStorage.setItem(STORE_STORAGE_KEY, JSON.stringify(target));
+        if (debounceTimerRef.current !== null) {
+          window.clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
+        }
         if (overrideStore) {
+          immediateFlushRef.current = true;
           setStore(overrideStore);
+        } else if (cloudReadyRef.current) {
+          enqueueCloudUpsert(target);
         }
         return { ok: true, message: 'Todas as alterações foram salvas com sucesso!' };
       } catch {
@@ -640,13 +741,14 @@ export function useStore() {
         };
       }
     },
-    [store]
+    [store, enqueueCloudUpsert]
   );
 
   return {
     store,
     setStore,
     saveStoreChanges,
+    refreshFromCloud,
     cart,
     addToCart,
     updateCartQty,
