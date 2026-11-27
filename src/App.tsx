@@ -52,6 +52,7 @@ export default function App() {
     registerCustomer,
     logoutCustomer,
     updateCustomerAccount,
+    resetCustomerPassword,
     toggleFavoriteProduct,
     exportBackupJson,
     importBackupJson,
@@ -249,6 +250,7 @@ export default function App() {
             onRegister={registerCustomer}
             onLogout={logoutCustomer}
             onUpdateCustomer={updateCustomerAccount}
+            onResetPassword={resetCustomerPassword}
             onToggleFavorite={toggleFavoriteProduct}
             onAddToCart={handleAddToCart}
             onBackToStore={goHome}

@@ -964,3 +964,117 @@ export async function sendTestEmailForTemplate(
   const sampleOrder = createSampleOrder(templateKey, targetEmail);
   return sendOrderTemplateEmail(config, sampleOrder, templateKey, { isTest: true });
 }
+
+export function buildPasswordResetEmailHtml(params: {
+  customerName: string;
+  resetCode: string;
+  logoUrl: string;
+  officialEmail?: string;
+}): string {
+  const safeName = escapeHtml(params.customerName.trim() || 'Cliente');
+  const safeCode = escapeHtml(params.resetCode.trim());
+  const safeLogo = escapeHtml((params.logoUrl || 'https://googleusercontent.com').trim());
+  const safeOfficialEmail = escapeHtml(
+    (params.officialEmail || 'contato.bthtech@gmail.com').trim()
+  );
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recuperação de Senha BTHTECH</title>
+</head>
+<body style="margin:0;padding:14px 8px;background-color:#0B0D10;font-family:Arial,Helvetica,sans-serif;color:#FFFFFF;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:460px;margin:0 auto;background-color:#161A20;border:1px solid #272D38;border-radius:8px;overflow:hidden;">
+    <tr>
+      <td align="center" style="padding:22px 18px 16px 18px;background-color:#0B0D10;border-bottom:2px solid #FF6500;">
+        <img src="${safeLogo}" width="200" alt="BTHTECH" style="display:block;width:200px;max-width:100%;height:auto;margin:0 auto 6px auto;border:0;color:#FF6500;font-size:20px;font-weight:bold;" />
+        <div style="font-size:11px;font-weight:bold;letter-spacing:2px;color:#94A3B8;text-transform:uppercase;">
+          BTHTECH
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:24px 20px 22px 20px;">
+        <div style="margin:0 0 14px 0;">
+          <span style="display:inline-block;padding:6px 12px;border-radius:4px;background-color:#0B0D10;border:1px solid #FF6500;color:#FF6500;font-size:11px;font-weight:bold;letter-spacing:0.8px;text-transform:uppercase;">
+            Recuperação de Senha
+          </span>
+        </div>
+        <h1 style="margin:0 0 12px 0;font-size:19px;line-height:1.35;font-weight:bold;color:#FFFFFF;">
+          Olá, ${safeName}!
+        </h1>
+        <p style="margin:0 0 20px 0;font-size:14px;line-height:1.55;color:#CBD5E1;">
+          Recebemos uma solicitação para redefinir a senha da sua conta na <strong style="color:#FFFFFF;">BTHTECH</strong>. Use o código de 6 dígitos abaixo na tela de recuperação para criar uma nova senha:
+        </p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#0B0D10;border:1px solid #FF6500;border-radius:6px;">
+          <tr>
+            <td align="center" style="padding:18px 12px;">
+              <span style="display:inline-block;font-family:'Courier New',Courier,monospace;font-size:32px;font-weight:bold;letter-spacing:8px;color:#FF6500;">
+                ${safeCode}
+              </span>
+            </td>
+          </tr>
+        </table>
+        <p style="margin:18px 0 0 0;font-size:12px;line-height:1.5;color:#94A3B8;">
+          Se você não solicitou a recuperação de senha, ignore este e-mail com segurança. Sua senha atual permanecerá inalterada.
+        </p>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" style="padding:16px 20px;background-color:#0B0D10;border-top:1px solid #272D38;">
+        <p style="margin:0 0 6px 0;font-size:12px;color:#FF6500;font-weight:bold;">
+          BTHTECH — A sua melhor loja em hardware e periféricos.
+        </p>
+        <p style="margin:0;font-size:11px;color:#94A3B8;">
+          Atendimento: ${safeOfficialEmail}
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+export async function sendPasswordResetEmail(
+  config: EmailConfig,
+  params: {
+    customerName: string;
+    to_email: string;
+    resetCode: string;
+  }
+): Promise<{ ok: boolean; message: string }> {
+  const check = validateScriptAndRecipient(config, params.to_email);
+  if (!check.ok) {
+    return { ok: false, message: check.message };
+  }
+
+  const code = params.resetCode.trim();
+  const subject = `Recuperação de Senha - Código ${code} | BTHTECH`;
+  const html_body = buildPasswordResetEmailHtml({
+    customerName: params.customerName,
+    resetCode: code,
+    logoUrl: config.emailLogoUrl || 'https://googleusercontent.com',
+    officialEmail: config.officialEmail,
+  });
+
+  const dispatch = await postToGmailScript(check.url, {
+    to_email: check.to,
+    subject,
+    html_body,
+  });
+
+  if (!dispatch.ok) {
+    return {
+      ok: false,
+      message: `Falha ao conectar com o Disparador Gmail: ${dispatch.error}`,
+    };
+  }
+
+  return {
+    ok: true,
+    message: `Código de recuperação enviado para ${check.to}! Verifique sua caixa de entrada ou spam.`,
+  };
+}
+

@@ -459,6 +459,24 @@ export function useStore() {
     }));
   }, []);
 
+  const resetCustomerPassword = useCallback(
+    (customerId: string, newPassword: string): { ok: boolean; message: string } => {
+      const found = store.customers.find((c) => c.id === customerId);
+      if (!found) {
+        return { ok: false, message: 'Conta não encontrada.' };
+      }
+      setStore((prev) => ({
+        ...prev,
+        customers: prev.customers.map((c) =>
+          c.id === customerId ? { ...c, password: newPassword } : c
+        ),
+      }));
+      setActiveCustomerId(customerId);
+      return { ok: true, message: 'Senha redefinida com sucesso!' };
+    },
+    [store.customers]
+  );
+
   const toggleFavoriteProduct = useCallback(
     (productId: string): boolean => {
       if (!activeCustomerId) return false;
@@ -610,6 +628,7 @@ export function useStore() {
     registerCustomer,
     logoutCustomer,
     updateCustomerAccount,
+    resetCustomerPassword,
     toggleFavoriteProduct,
     exportBackupJson,
     importBackupJson,

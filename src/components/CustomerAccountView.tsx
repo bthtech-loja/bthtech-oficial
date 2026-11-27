@@ -9,6 +9,7 @@ import {
   Eye,
   FileText,
   Heart,
+  KeyRound,
   Loader2,
   LogIn,
   LogOut,
@@ -45,7 +46,11 @@ import {
   maskCpfCnpj,
   maskPhoneBR,
 } from '../utils/formatters';
-import { generateOtpCode, sendVerificationEmail } from '../utils/emailService';
+import {
+  generateOtpCode,
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+} from '../utils/emailService';
 import { StudioProductImage } from './StudioProductImage';
 
 interface CustomerAccountViewProps {
@@ -58,6 +63,7 @@ interface CustomerAccountViewProps {
   ) => { ok: boolean; message: string };
   onLogout: () => void;
   onUpdateCustomer: (updated: CustomerAccount) => void;
+  onResetPassword: (customerId: string, newPassword: string) => { ok: boolean; message: string };
   onToggleFavorite: (productId: string) => boolean;
   onAddToCart: (product: Product) => void;
   onBackToStore: () => void;
@@ -166,6 +172,7 @@ export function CustomerAccountView({
   onRegister,
   onLogout,
   onUpdateCustomer,
+  onResetPassword,
   onToggleFavorite,
   onAddToCart,
   onBackToStore,
@@ -177,6 +184,17 @@ export function CustomerAccountView({
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [authError, setAuthError] = useState('');
+
+  // Forgot Password (2-step recovery) state
+  const [forgotStep, setForgotStep] = useState<'none' | 'request' | 'reset'>('none');
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotTargetCustomerId, setForgotTargetCustomerId] = useState<string | null>(null);
+  const [forgotOtp, setForgotOtp] = useState('');
+  const [forgotEnteredOtp, setForgotEnteredOtp] = useState('');
+  const [forgotNewPass, setForgotNewPass] = useState('');
+  const [forgotConfirmPass, setForgotConfirmPass] = useState('');
+  const [forgotSending, setForgotSending] = useState(false);
+  const [forgotInfoMsg, setForgotInfoMsg] = useState('');
 
   // Register state
   const [regName, setRegName] = useState('');
@@ -321,6 +339,96 @@ export function CustomerAccountView({
       if (!res.ok) {
         setAuthError(res.message);
       }
+    };
+
+    const resetForgotFlow = () => {
+      setForgotStep('none');
+      setForgotTargetCustomerId(null);
+      setForgotOtp('');
+      setForgotEnteredOtp('');
+      setForgotNewPass('');
+      setForgotConfirmPass('');
+      setForgotInfoMsg('');
+      setAuthError('');
+    };
+
+    const dispatchRecoveryCode = async () => {
+      const cleanEmail = forgotEmail.trim().toLowerCase();
+      if (!cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+        setAuthError('Informe o e-mail cadastrado corretamente.');
+        return;
+      }
+
+      const found = store.customers.find(
+        (c) => c.email.trim().toLowerCase() === cleanEmail
+      );
+      if (!found) {
+        setAuthError('Não encontramos nenhuma conta cadastrada com este e-mail.');
+        return;
+      }
+
+      const code = generateOtpCode();
+      setForgotSending(true);
+      setAuthError('');
+      setForgotInfoMsg('');
+
+      const result = await sendPasswordResetEmail(store.email, {
+        customerName: found.fullName,
+        to_email: found.email,
+        resetCode: code,
+      });
+
+      setForgotSending(false);
+      if (!result.ok) {
+        setAuthError(result.message);
+        return;
+      }
+
+      setForgotTargetCustomerId(found.id);
+      setForgotOtp(code);
+      setForgotEnteredOtp('');
+      setForgotNewPass('');
+      setForgotConfirmPass('');
+      setForgotStep('reset');
+      setForgotInfoMsg(
+        `Enviamos um código de 6 dígitos para ${found.email}. Confira sua caixa de entrada ou spam.`
+      );
+    };
+
+    const handleSendRecoverySubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      await dispatchRecoveryCode();
+    };
+
+    const handleResetPasswordSubmit = (e: React.FormEvent) => {
+      e.preventDefault();
+      setAuthError('');
+
+      if (!forgotOtp || forgotEnteredOtp.trim() !== forgotOtp) {
+        setAuthError('Código de 6 dígitos inválido. Confira o código enviado para o seu e-mail.');
+        return;
+      }
+      if (forgotNewPass.length < 6) {
+        setAuthError('A nova senha deve ter pelo menos 6 caracteres.');
+        return;
+      }
+      if (forgotNewPass !== forgotConfirmPass) {
+        setAuthError('As senhas digitadas não conferem.');
+        return;
+      }
+      if (!forgotTargetCustomerId) {
+        setAuthError('Sessão de recuperação expirada. Solicite um novo código.');
+        setForgotStep('request');
+        return;
+      }
+
+      const res = onResetPassword(forgotTargetCustomerId, forgotNewPass);
+      if (!res.ok) {
+        setAuthError(res.message);
+        return;
+      }
+
+      resetForgotFlow();
     };
 
     const completeRegistration = () => {
@@ -484,7 +592,7 @@ export function CustomerAccountView({
                 type="button"
                 onClick={() => {
                   setAuthMode('login');
-                  setAuthError('');
+                  resetForgotFlow();
                 }}
                 className={`px-4 py-2 rounded text-xs font-display font-bold uppercase tracking-wider transition-colors ${
                   authMode === 'login' ? 'text-white' : 'text-slate-400 hover:text-white'
@@ -497,7 +605,7 @@ export function CustomerAccountView({
                 type="button"
                 onClick={() => {
                   setAuthMode('register');
-                  setAuthError('');
+                  resetForgotFlow();
                 }}
                 className={`px-4 py-2 rounded text-xs font-display font-bold uppercase tracking-wider transition-colors ${
                   authMode === 'register' ? 'text-white' : 'text-slate-400 hover:text-white'
@@ -516,7 +624,160 @@ export function CustomerAccountView({
               </div>
             )}
 
-            {authMode === 'login' ? (
+            {authMode === 'login' && forgotStep === 'request' ? (
+              <form onSubmit={handleSendRecoverySubmit} className="space-y-4">
+                <div className="p-4 rounded bg-[#0B0D10] border border-[#272D38] space-y-1.5">
+                  <div className="flex items-center gap-2 font-display font-bold text-base uppercase tracking-wider text-white">
+                    <KeyRound className="w-4 h-4" style={{ color: accentColor }} />
+                    <span>Recuperar Senha</span>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Informe o e-mail cadastrado na sua conta para receber um código de verificação de 6 dígitos.
+                  </p>
+                </div>
+
+                <div>
+                  <label htmlFor="cli-forgot-email" className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    E-mail cadastrado
+                  </label>
+                  <input
+                    id="cli-forgot-email"
+                    type="email"
+                    required
+                    autoFocus
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    placeholder="seuemail@exemplo.com"
+                    className="w-full h-11 px-3.5 rounded bg-[#0B0D10] border border-[#272D38] text-sm text-white focus:outline-none focus:border-white/60"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={forgotSending}
+                  className="w-full h-12 rounded font-display font-extrabold text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 hover:opacity-95 transition-opacity disabled:opacity-60"
+                  style={{ backgroundColor: accentColor }}
+                >
+                  {forgotSending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Enviando Código...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Mail className="w-4 h-4" />
+                      <span>Enviar Código de Recuperação</span>
+                    </>
+                  )}
+                </button>
+
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={resetForgotFlow}
+                    className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white underline"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Voltar para o login</span>
+                  </button>
+                </div>
+              </form>
+            ) : authMode === 'login' && forgotStep === 'reset' ? (
+              <form onSubmit={handleResetPasswordSubmit} className="space-y-4">
+                <div className="p-4 rounded bg-[#0B0D10] border border-[#00E676]/40 space-y-1.5">
+                  <div className="flex items-center gap-2 text-[#00E676] font-display font-bold text-base uppercase tracking-wider">
+                    <Mail className="w-5 h-5" />
+                    <span>Código de Recuperação Enviado</span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    {forgotInfoMsg ||
+                      `Digite o código de 6 dígitos enviado para ${forgotEmail.trim()} e defina sua nova senha.`}
+                  </p>
+                </div>
+
+                <div>
+                  <label htmlFor="cli-forgot-otp" className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Código de 6 dígitos recebido no e-mail *
+                  </label>
+                  <input
+                    id="cli-forgot-otp"
+                    type="text"
+                    required
+                    inputMode="numeric"
+                    maxLength={6}
+                    autoFocus
+                    value={forgotEnteredOtp}
+                    onChange={(e) =>
+                      setForgotEnteredOtp(e.target.value.replace(/\D/g, '').slice(0, 6))
+                    }
+                    placeholder="000000"
+                    className="w-full h-12 px-4 rounded bg-[#0B0D10] border border-[#272D38] text-center text-xl font-mono-num font-bold tracking-[0.4em] text-white focus:outline-none focus:border-[#00E676]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="cli-forgot-newpass" className="block text-xs font-semibold text-slate-300 mb-1.5">
+                      Nova Senha *
+                    </label>
+                    <input
+                      id="cli-forgot-newpass"
+                      type="password"
+                      required
+                      minLength={6}
+                      value={forgotNewPass}
+                      onChange={(e) => setForgotNewPass(e.target.value)}
+                      placeholder="Mínimo 6 caracteres"
+                      className="w-full h-11 px-3.5 rounded bg-[#0B0D10] border border-[#272D38] text-sm text-white focus:outline-none focus:border-white/60"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="cli-forgot-confirmpass" className="block text-xs font-semibold text-slate-300 mb-1.5">
+                      Confirmar Nova Senha *
+                    </label>
+                    <input
+                      id="cli-forgot-confirmpass"
+                      type="password"
+                      required
+                      minLength={6}
+                      value={forgotConfirmPass}
+                      onChange={(e) => setForgotConfirmPass(e.target.value)}
+                      placeholder="Repita a nova senha"
+                      className="w-full h-11 px-3.5 rounded bg-[#0B0D10] border border-[#272D38] text-sm text-white focus:outline-none focus:border-white/60"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full h-12 rounded font-display font-extrabold text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 hover:opacity-95 transition-opacity"
+                  style={{ backgroundColor: accentColor }}
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Redefinir Senha e Entrar</span>
+                </button>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
+                  <button
+                    type="button"
+                    onClick={resetForgotFlow}
+                    className="inline-flex items-center gap-1 text-slate-400 hover:text-white underline"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Voltar para o login</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={forgotSending}
+                    onClick={() => void dispatchRecoveryCode()}
+                    className="font-semibold underline disabled:opacity-50"
+                    style={{ color: accentColor }}
+                  >
+                    {forgotSending ? 'Reenviando...' : 'Reenviar código'}
+                  </button>
+                </div>
+              </form>
+            ) : authMode === 'login' ? (
               <form onSubmit={handleLoginSubmit} className="space-y-4">
                 <div>
                   <label htmlFor="cli-login-id" className="block text-xs font-semibold text-slate-300 mb-1.5">
@@ -546,6 +807,20 @@ export function CustomerAccountView({
                     placeholder="Sua senha"
                     className="w-full h-11 px-3.5 rounded bg-[#0B0D10] border border-[#272D38] text-sm text-white focus:outline-none focus:border-white/60"
                   />
+                  <div className="mt-1.5 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthError('');
+                        setForgotInfoMsg('');
+                        setForgotEmail(loginIdentifier.includes('@') ? loginIdentifier.trim() : '');
+                        setForgotStep('request');
+                      }}
+                      className="text-xs text-slate-400 hover:text-white underline transition-colors"
+                    >
+                      Esqueci minha senha
+                    </button>
+                  </div>
                 </div>
 
                 <button
@@ -563,7 +838,7 @@ export function CustomerAccountView({
                     type="button"
                     onClick={() => {
                       setAuthMode('register');
-                      setAuthError('');
+                      resetForgotFlow();
                     }}
                     className="font-semibold underline hover:text-white"
                     style={{ color: accentColor }}
