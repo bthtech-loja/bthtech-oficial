@@ -347,6 +347,18 @@ function tlv(id: string, value: string): string {
   return `${id}${len}${value}`;
 }
 
+function normalizePixKeyForBrCode(rawKey: string): string {
+  const trimmed = rawKey.trim();
+  if (!trimmed || trimmed === '00.000.000/0001-00' || trimmed === '00000000000100') {
+    return '33279307000122';
+  }
+  // If formatted CNPJ (XX.XXX.XXX/XXXX-XX), strip punctuation for BACEN EMVCo tag 26.01
+  if (/^\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}$/.test(trimmed)) {
+    return trimmed.replace(/\D/g, '');
+  }
+  return trimmed;
+}
+
 export function buildPixBrCode(params: {
   pixKey: string;
   beneficiary: string;
@@ -354,31 +366,37 @@ export function buildPixBrCode(params: {
   amount: number;
   txId: string;
 }): string {
-  const cleanKey = params.pixKey.trim() || 'bthtech@pix.com.br';
-  const merchantName = (params.beneficiary || 'BTHTECH')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9 ]/g, '')
-    .slice(0, 25)
-    .trim() || 'BTHTECH';
-  const merchantCity = (params.city || 'CASCAVEL')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9 ]/g, '')
-    .slice(0, 15)
-    .trim() || 'CASCAVEL';
-  const tx = (params.txId || 'BTHTECH01').replace(/[^a-zA-Z0-9]/g, '').slice(0, 25) || 'BTHTECH';
+  const cleanKey = normalizePixKeyForBrCode(params.pixKey);
+  const merchantName =
+    (params.beneficiary || 'BTHTECH HARDWARE LTDA')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9 ]/g, '')
+      .toUpperCase()
+      .slice(0, 25)
+      .trim() || 'BTHTECH HARDWARE LTDA';
+  const merchantCity =
+    (params.city || 'CASCAVEL')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9 ]/g, '')
+      .toUpperCase()
+      .slice(0, 15)
+      .trim() || 'CASCAVEL';
+  const tx =
+    (params.txId || 'BTHTECH01').replace(/[^a-zA-Z0-9]/g, '').slice(0, 25) || 'BTHTECH01';
 
   const gui = tlv('00', 'br.gov.bcb.pix');
   const keyField = tlv('01', cleanKey);
   const merchantAccount = tlv('26', `${gui}${keyField}`);
+  const safeAmount = Number.isFinite(params.amount) && params.amount > 0 ? params.amount : 0.01;
 
   const payloadWithoutCrc = [
     tlv('00', '01'),
     merchantAccount,
     tlv('52', '0000'),
     tlv('53', '986'),
-    tlv('54', params.amount.toFixed(2)),
+    tlv('54', safeAmount.toFixed(2)),
     tlv('58', 'BR'),
     tlv('59', merchantName),
     tlv('60', merchantCity),

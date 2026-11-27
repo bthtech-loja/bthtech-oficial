@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import {
   ArrowLeft,
+  BarChart3,
   Check,
   CheckCircle2,
   ChevronLeft,
@@ -68,6 +69,7 @@ import {
 } from '../utils/emailService';
 import { ResilientImage } from './ResilientImage';
 import { StudioProductImage } from './StudioProductImage';
+import { AdminReportsTab } from './AdminReportsTab';
 
 interface AdminPanelProps {
   store: StoreState;
@@ -83,10 +85,18 @@ interface AdminPanelProps {
   ) => void;
   onExportJson: () => void;
   onImportJson: (jsonText: string) => { ok: boolean; message: string };
+  onRefreshCloud?: () => Promise<unknown> | void;
   onExitAdmin: () => void;
 }
 
-type AdminTab = 'visual' | 'products' | 'coupons' | 'payments' | 'shipping' | 'fiscal_orders';
+type AdminTab =
+  | 'visual'
+  | 'products'
+  | 'coupons'
+  | 'payments'
+  | 'shipping'
+  | 'fiscal_orders'
+  | 'reports';
 
 const CATEGORIES: ProductCategory[] = [
   'Mouses',
@@ -154,6 +164,7 @@ export function AdminPanel({
   onUpdateOrderFulfillment,
   onExportJson,
   onImportJson,
+  onRefreshCloud,
   onExitAdmin,
 }: AdminPanelProps) {
   const [authenticated, setAuthenticated] = useState(false);
@@ -349,6 +360,7 @@ export function AdminPanel({
     { id: 'payments', label: '4. Pagamentos e Parcelamento', icon: <CreditCard className="w-4 h-4" /> },
     { id: 'shipping', label: '5. Frete e Entregas', icon: <Truck className="w-4 h-4" /> },
     { id: 'fiscal_orders', label: `6. Dados Fiscais, E-mail e Pedidos (${store.orders.length})`, icon: <FileText className="w-4 h-4" /> },
+    { id: 'reports', label: '7. Relatórios', icon: <BarChart3 className="w-4 h-4" /> },
   ];
 
   return (
@@ -3843,6 +3855,15 @@ export function AdminPanel({
               )}
             </div>
           </div>
+        )}
+
+        {/* TAB 7: RELATÓRIOS E GRÁFICOS */}
+        {activeTab === 'reports' && (
+          <AdminReportsTab
+            orders={store.orders}
+            accentColor={accentColor}
+            onRefreshCloud={onRefreshCloud}
+          />
         )}
 
         {/* Bottom Save Changes Bar */}

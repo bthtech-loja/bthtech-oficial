@@ -227,6 +227,15 @@ function normalizeStoreState(
     payment: {
       ...INITIAL_STORE_STATE.payment,
       ...(parsed.payment || {}),
+      pixKey:
+        !parsed.payment?.pixKey || parsed.payment.pixKey.trim() === '00.000.000/0001-00'
+          ? INITIAL_STORE_STATE.payment.pixKey
+          : parsed.payment.pixKey,
+      pixBeneficiary:
+        !parsed.payment?.pixBeneficiary ||
+        parsed.payment.pixBeneficiary.trim() === 'BTHTECH COMÉRCIO DE HARDWARE LTDA'
+          ? INITIAL_STORE_STATE.payment.pixBeneficiary
+          : parsed.payment.pixBeneficiary,
       pixQrCodeImageUrl: parsed.payment?.pixQrCodeImageUrl || '',
       infinitePayEnabled:
         typeof parsed.payment?.infinitePayEnabled === 'boolean'
@@ -372,12 +381,10 @@ export function useStore() {
       const task = uploadChainRef.current
         .then(async () => {
           const res = await upsertCloudStore(snapshot);
-          if (options?.notify) {
+          if (options?.notify && !res.ok) {
             showCloudSyncNotice(
-              res.ok,
-              res.ok
-                ? res.message || 'Sincronizado na nuvem com sucesso!'
-                : res.error || 'Erro ao sincronizar na nuvem.'
+              false,
+              res.error || 'Erro ao sincronizar na nuvem.'
             );
           }
           return { ok: res.ok, error: res.error };

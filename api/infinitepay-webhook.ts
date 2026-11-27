@@ -1,19 +1,4 @@
-import defaultConfig from '../src/defaultConfig.json';
-
 declare const process: { env: Record<string, string | undefined> };
-
-interface ApiRequest {
-  method?: string;
-  headers: Record<string, string | string[] | undefined>;
-  body?: unknown;
-}
-
-interface ApiResponse {
-  status: (code: number) => ApiResponse;
-  json: (payload: unknown) => void;
-  setHeader: (name: string, value: string) => void;
-  end: (body?: string) => void;
-}
 
 interface StoredOrder {
   id: string;
@@ -34,9 +19,7 @@ interface StoredRoot {
 }
 
 const SUPABASE_URL = (
-  process.env.SUPABASE_URL ||
-  defaultConfig.supabase?.url ||
-  'https://yzjelmroikleduddentc.supabase.co'
+  process.env.SUPABASE_URL || 'https://yzjelmroikleduddentc.supabase.co'
 )
   .trim()
   .replace(/\/+$/, '');
@@ -44,16 +27,16 @@ const SUPABASE_URL = (
 const SUPABASE_KEY = (
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_ANON_KEY ||
-  defaultConfig.supabase?.anonKey ||
-  ''
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl6amVsbXJvaWtsZWR1ZGRlbnRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU3ODk5NjAsImV4cCI6MjExMTM2NTk2MH0.g82yYkBMIqosqI_JkGlU4zPMkD3dh72rOBCWUFRIqkk'
 ).trim();
 
-const SUPABASE_TABLE = (defaultConfig.supabase?.table || 'bthtech_store').trim();
-const SUPABASE_ROW_ID = (defaultConfig.supabase?.rowId || 'main_store').trim();
+const SUPABASE_TABLE = 'bthtech_store';
+const SUPABASE_ROW_ID = 'main_store';
 const SUPABASE_ENDPOINT = `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}`;
 
 const INFINITEPAY_PAYMENT_CHECK_ENDPOINT =
   'https://api.infinitepay.io/invoices/public/checkout/payment_check';
+const DEFAULT_HANDLE = 'bth_solar_distribuidora';
 
 function parseBody(rawBody: unknown): Record<string, unknown> {
   if (!rawBody) return {};
@@ -67,9 +50,10 @@ function parseBody(rawBody: unknown): Record<string, unknown> {
       return {};
     }
   }
-  return typeof rawBody === 'object'
-    ? (rawBody as Record<string, unknown>)
-    : {};
+  if (typeof rawBody === 'object') {
+    return rawBody as Record<string, unknown>;
+  }
+  return {};
 }
 
 function buildSupabaseHeaders(): Record<string, string> {
@@ -86,9 +70,9 @@ async function verifyInfinitePayPayment(params: {
   orderNsu: string;
   transactionNsu: string;
   slug: string;
-}): Promise<{ verified: boolean; paid: boolean; captureMethod?: string }> {
+}): Promise<{ verified: boolean; paid: boolean; captureMethod?: string; error?: string }> {
   if (!params.transactionNsu || !params.slug) {
-    return { verified: false, paid: false };
+    return { verified: false, paid: false, error: 'transaction_nsu ou slug ausente' };
   }
 
   const headers: Record<string, string> = {
@@ -97,7 +81,6 @@ async function verifyInfinitePayPayment(params: {
   const apiKey = (process.env.INFINITEPAY_API_KEY || '').trim();
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
-    headers['X-Api-Key'] = apiKey;
   }
 
   try {
@@ -112,73 +95,91 @@ async function verifyInfinitePayPayment(params: {
       }),
     });
 
-    if (!resp.ok) {
-      return { verified: false, paid: false };
+    const rawText = await resp.text();
+    let data: Record<string, unknown> = {};
+    try {
+      data = JSON.parse(rawText) as Record<string, unknown>;
+    } catch {
+      data = {};
     }
 
-    const data = (await resp.json()) as {
-      paid?: boolean;
-      capture_method?: string;
-    };
+    if (!resp.ok) {
+      return {
+        verified: false,
+        paid: false,
+        error: String(data.message || data.error || rawText || `HTTP ${resp.status}`),
+      };
+    }
+
     return {
       verified: true,
       paid: Boolean(data.paid),
-      captureMethod: data.capture_method,
+      captureMethod: typeof data.capture_method === 'string' ? data.capture_method : undefined,
     };
-  } catch {
-    return { verified: false, paid: false };
+  } catch (err: unknown) {
+    return {
+      verified: false,
+      paid: false,
+      error: err instanceof Error ? err.message : 'Erro de rede na verificação InfinitePay',
+    };
   }
 }
 
-export default async function handler(req: ApiRequest, res: ApiResponse) {
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Allow', 'POST, OPTIONS');
-    res.status(204).end();
-    return;
-  }
-
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST, OPTIONS');
-    res.status(405).json({ ok: false, error: 'Método não permitido.' });
-    return;
-  }
-
-  const payload = parseBody(req.body);
-  const orderNsu = String(payload.order_nsu || '').trim();
-  const transactionNsu = String(payload.transaction_nsu || '').trim();
-  const slug = String(payload.invoice_slug || payload.slug || '').trim();
-  const receiptUrl = String(payload.receipt_url || '').trim();
-  const captureMethod = String(payload.capture_method || '').trim();
-  const paidAmount = Number(payload.paid_amount || 0);
-  const eventStatus = String(payload.status || '').trim().toLowerCase();
-
-  if (!orderNsu || orderNsu.length > 64) {
-    res.status(400).json({ ok: false, error: 'order_nsu inválido ou ausente no webhook.' });
-    return;
-  }
-
-  if (!transactionNsu || !slug) {
-    res.status(400).json({
-      ok: false,
-      error: 'transaction_nsu e slug são obrigatórios para confirmar o pagamento.',
-    });
-    return;
-  }
-
-  const isStatusCanceledOrFailed = ['canceled', 'cancelled', 'failed', 'refunded'].includes(
-    eventStatus
-  );
-  if (isStatusCanceledOrFailed) {
-    res.status(200).json({ ok: true, ignored: true, reason: `status_${eventStatus}` });
-    return;
-  }
-
-  if (!SUPABASE_KEY) {
-    res.status(500).json({ ok: false, error: 'Credenciais do Supabase não configuradas.' });
-    return;
-  }
-
+export default async function handler(req: any, res: any) {
   try {
+    if (req?.method === 'OPTIONS') {
+      res.setHeader('Allow', 'POST, OPTIONS');
+      res.status(204).end();
+      return;
+    }
+
+    if (req?.method !== 'POST') {
+      res.setHeader('Allow', 'POST, OPTIONS');
+      res.status(405).json({ ok: false, error: 'Método não permitido.' });
+      return;
+    }
+
+    const payload = parseBody(req?.body);
+    const orderNsu = String(payload.order_nsu || '').trim();
+    const transactionNsu = String(payload.transaction_nsu || '').trim();
+    const slug = String(payload.invoice_slug || payload.slug || '').trim();
+    const receiptUrl = String(payload.receipt_url || '').trim();
+    const captureMethod = String(payload.capture_method || '').trim();
+    const paidAmount = Number(payload.paid_amount || 0);
+    const eventStatus = String(payload.status || '').trim().toLowerCase();
+
+    if (!orderNsu || orderNsu.length > 64) {
+      res.status(400).json({ ok: false, error: 'order_nsu inválido ou ausente no webhook.' });
+      return;
+    }
+
+    if (!transactionNsu || !slug) {
+      res.status(400).json({
+        ok: false,
+        error: 'transaction_nsu e invoice_slug são obrigatórios para confirmar o pagamento.',
+      });
+      return;
+    }
+
+    const isStatusCanceledOrFailed = ['canceled', 'cancelled', 'failed', 'refunded'].includes(
+      eventStatus
+    );
+    if (isStatusCanceledOrFailed) {
+      res.status(200).json({
+        success: true,
+        message: null,
+        ok: true,
+        ignored: true,
+        reason: `status_${eventStatus}`,
+      });
+      return;
+    }
+
+    if (!SUPABASE_KEY) {
+      res.status(500).json({ ok: false, error: 'Credenciais do Supabase não configuradas.' });
+      return;
+    }
+
     // 1. Fetch current main_store document from Supabase
     const getResp = await fetch(
       `${SUPABASE_ENDPOINT}?id=eq.${encodeURIComponent(SUPABASE_ROW_ID)}&select=data`,
@@ -218,11 +219,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
 
     const activeHandle =
-      String(
-        currentData.payment?.infinitePayHandle ||
-          defaultConfig.infinitePay?.handle ||
-          'bth_solar_distribuidora'
-      ).trim() || 'bth_solar_distribuidora';
+      String(currentData.payment?.infinitePayHandle || DEFAULT_HANDLE).trim() ||
+      DEFAULT_HANDLE;
 
     // 2. Mandatory server-to-server verification with InfinitePay payment_check API
     const verification = await verifyInfinitePayPayment({
@@ -235,7 +233,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (!verification.verified) {
       res.status(502).json({
         ok: false,
-        error: 'Não foi possível validar a transação junto à API da InfinitePay.',
+        error: verification.error || 'Não foi possível validar a transação junto à InfinitePay.',
       });
       return;
     }
@@ -311,12 +309,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
 
     res.status(200).json({
+      success: true,
+      message: null,
       ok: true,
       order_nsu: orderNsu,
       status: 'Pago',
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Erro interno';
-    res.status(500).json({ ok: false, error: msg });
+    const details = err instanceof Error ? err.message : 'Erro interno inesperado';
+    res.status(500).json({ ok: false, error: details });
   }
 }

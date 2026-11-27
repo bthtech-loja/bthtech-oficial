@@ -3,15 +3,16 @@ import {
   ArrowLeft,
   Check,
   CheckCircle2,
+  Clock,
   Copy,
   CreditCard,
   ExternalLink,
   FileText,
+  Loader2,
   MapPin,
   MessageCircle,
   Minus,
   Plus,
-  QrCode,
   ShoppingBag,
   Tag,
   Trash2,
@@ -47,6 +48,7 @@ import { ResilientImage } from './ResilientImage';
 import { ShippingCalculator } from './ShippingCalculator';
 import { CardBrandsStrip } from './CardBrandsStrip';
 import { sendOrderUpdateEmail } from '../utils/emailService';
+import { fetchCloudStore } from '../utils/supabaseSync';
 
 interface CartCheckoutDrawerProps {
   isOpen: boolean;
@@ -115,9 +117,9 @@ export function CartCheckoutDrawer({
   const [cepLoading, setCepLoading] = useState(false);
 
   const [confirmedOrder, setConfirmedOrder] = useState<Order | null>(null);
+  const [liveOrderStatus, setLiveOrderStatus] = useState<string>('Aguardando Pagamento');
   const [infinitePayRedirectUrl, setInfinitePayRedirectUrl] = useState('');
   const [infinitePayError, setInfinitePayError] = useState('');
-  const [showPixModalBox, setShowPixModalBox] = useState(false);
   const [copiedPix, setCopiedPix] = useState(false);
   const [copiedPixKey, setCopiedPixKey] = useState(false);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
@@ -307,6 +309,60 @@ export function CartCheckoutDrawer({
     };
   }, [customer.cep, viaCepAddress, onViaCepResolved]);
 
+  // Sync live PIX payment status from store + Supabase bthtech_store every 5 seconds
+  const PAID_STATUS_SET = useMemo(
+    () =>
+      new Set([
+        'Pago',
+        'Pagamento Aprovado',
+        'Em Separação',
+        'Produto Enviado',
+        'Produto Entregue',
+      ]),
+    []
+  );
+
+  useEffect(() => {
+    if (!confirmedOrder) return;
+    const storeMatch = store.orders.find((o) => o.id === confirmedOrder.id);
+    const nextStatus = storeMatch?.status || confirmedOrder.status;
+    setLiveOrderStatus(nextStatus);
+  }, [confirmedOrder, store.orders]);
+
+  useEffect(() => {
+    if (!isOpen || step !== 'confirmed' || !confirmedOrder) return;
+    if (confirmedOrder.paymentMethod !== 'pix') return;
+    if (PAID_STATUS_SET.has(liveOrderStatus)) return;
+
+    let cancelled = false;
+    const pollSupabaseStatus = async () => {
+      try {
+        const res = await fetchCloudStore();
+        if (cancelled || res.status !== 'found' || !Array.isArray(res.data.orders)) {
+          return;
+        }
+        const cloudOrder = res.data.orders.find((o) => o?.id === confirmedOrder.id);
+        if (cloudOrder?.status && cloudOrder.status !== liveOrderStatus) {
+          setLiveOrderStatus(cloudOrder.status);
+          if (PAID_STATUS_SET.has(cloudOrder.status)) {
+            void onRefreshCloud?.();
+          }
+        }
+      } catch {
+        // Silent retry on next 5s interval
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void pollSupabaseStatus();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isOpen, step, confirmedOrder, liveOrderStatus, PAID_STATUS_SET, onRefreshCloud]);
+
   if (!isOpen) return null;
 
   const handleApplyCoupon = () => {
@@ -383,7 +439,7 @@ export function CartCheckoutDrawer({
         id: orderId,
         createdAt,
         customerId: currentCustomer?.id,
-        status: useInfinitePay ? 'Aguardando Pagamento' : 'Pedido Realizado',
+        status: 'Aguardando Pagamento',
         statusHistory: { 'Pedido Realizado': createdAt },
         trackingCode: '',
         nfeInfo: '',
@@ -482,7 +538,7 @@ export function CartCheckoutDrawer({
 
       onClearCart();
       setConfirmedOrder(newOrder);
-      setShowPixModalBox(newOrder.paymentMethod === 'pix');
+      setLiveOrderStatus(newOrder.status);
       setStep('confirmed');
     } finally {
       submittingOrderRef.current = false;
@@ -496,7 +552,6 @@ export function CartCheckoutDrawer({
     setConfirmedOrder(null);
     setInfinitePayRedirectUrl('');
     setInfinitePayError('');
-    setShowPixModalBox(false);
     onClose();
   };
 
@@ -748,6 +803,33 @@ export function CartCheckoutDrawer({
                 </p>
 
                 <div className="grid grid-cols-1 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod('pix')}
+                    className={`p-3 rounded border flex items-center justify-between text-left transition-colors ${
+                      paymentMethod === 'pix'
+                        ? 'bg-[#0B0D10] border-[#00E676]'
+                        : 'bg-[#0B0D10]/50 border-[#272D38] hover:border-slate-600'
+                    }`}
+                  >
+                    <div className="space-y-0.5 pr-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-bold text-white">
+                          PIX (QR Code Dinâmico na Tela)
+                        </span>
+                        <span className="text-[11px] font-bold text-[#00E676]">
+                          10% OFF
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        Pagamento instantâneo com confirmação em tempo real na tela
+                      </div>
+                    </div>
+                    <span className="text-sm font-mono-num font-bold text-[#00E676] shrink-0">
+                      {formatBRL(subtotalPix)}
+                    </span>
+                  </button>
+
                   {infinitePayActive && (
                     <button
                       type="button"
@@ -761,14 +843,11 @@ export function CartCheckoutDrawer({
                       <div className="space-y-0.5 pr-2">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-xs font-bold text-white">
-                            InfinitePay (PIX ou Cartão até 12x)
-                          </span>
-                          <span className="px-1.5 py-0.5 rounded bg-[#FF6500]/15 border border-[#FF6500]/40 text-[10px] font-bold uppercase text-[#FF6500]">
-                            Checkout Seguro
+                            Cartão de Crédito até 12x / Checkout InfinitePay
                           </span>
                         </div>
                         <div className="text-[11px] text-slate-400">
-                          Escolha PIX ou Cartão de Crédito na página oficial InfinitePay
+                          Pague no Cartão de Crédito ou PIX pelo link seguro InfinitePay
                         </div>
                         <div className="pt-1">
                           <CardBrandsStrip brands={store.payment.acceptedCardBrands} compact />
@@ -779,26 +858,6 @@ export function CartCheckoutDrawer({
                       </span>
                     </button>
                   )}
-
-                  <button
-                    type="button"
-                    onClick={() => setPaymentMethod('pix')}
-                    className={`p-2.5 rounded border flex items-center justify-between text-left ${
-                      paymentMethod === 'pix'
-                        ? 'bg-[#0B0D10] border-[#00E676]'
-                        : 'bg-[#0B0D10]/50 border-[#272D38]'
-                    }`}
-                  >
-                    <div>
-                      <div className="text-xs font-bold text-white">PIX</div>
-                      <div className="text-[11px] text-slate-400">
-                        Aprovação imediata + envio prioritário
-                      </div>
-                    </div>
-                    <span className="text-sm font-mono-num font-bold text-[#00E676]">
-                      {formatBRL(subtotalPix)}
-                    </span>
-                  </button>
 
                   {!infinitePayActive && store.payment.creditCardEnabled && (
                     <>
@@ -1155,159 +1214,140 @@ export function CartCheckoutDrawer({
             </form>
           )}
 
-          {/* STEP 3: Hybrid Confirmation */}
-          {step === 'confirmed' && confirmedOrder && (
-            <div className="space-y-5">
-              <div className="p-4 rounded bg-[#161A20] border border-[#00E676]/50 text-center space-y-2">
-                <CheckCircle2 className="w-10 h-10 text-[#00E676] mx-auto" />
-                <h3 className="font-display font-extrabold text-2xl uppercase text-white">
-                  Pedido #{confirmedOrder.id} Registrado!
-                </h3>
-                <p className="text-xs text-slate-300">
-                  Seus dados fiscais foram salvos com sucesso. A NF-e será enviada para{' '}
-                  <strong className="text-white">{confirmedOrder.customer.email}</strong>.
-                </p>
-                <div className="pt-2 text-lg font-mono-num font-bold text-[#00E676]">
-                  Total: {formatBRL(confirmedOrder.totalAmount)}
-                </div>
-                {confirmedOrder.paymentMethod === 'credit_card' && (
-                  <div className="text-xs font-mono-num text-slate-200">
-                    Parcelamento selecionado:{' '}
-                    <strong className="text-white">
-                      {confirmedOrder.installments}x de {formatBRL(confirmedOrder.installmentValue)}
-                    </strong>{' '}
-                    ({store.payment.gatewayProvider})
-                  </div>
-                )}
-              </div>
+          {/* STEP 3: Hybrid Confirmation with Live PIX Status Polling */}
+          {step === 'confirmed' && confirmedOrder && (() => {
+            const isPixConfirmedPaid =
+              confirmedOrder.paymentMethod === 'pix' && PAID_STATUS_SET.has(liveOrderStatus);
 
-              {confirmedOrder.paymentMethod === 'credit_card' &&
-                store.payment.creditCardInstructions && (
-                  <div className="p-3 rounded bg-[#161A20] border border-[#272D38] text-xs text-slate-300 leading-relaxed">
-                    {store.payment.creditCardInstructions}
-                  </div>
-                )}
-
-              {infinitePayError && (
-                <div className="p-3 rounded bg-red-950/60 border border-red-500/60 text-xs text-red-200 leading-relaxed">
-                  <strong>Aviso InfinitePay:</strong> {infinitePayError}
-                </div>
-              )}
-
-              {/* Hybrid Buttons */}
-              <div className="grid grid-cols-1 gap-3">
-                {confirmedOrder.paymentMethod === 'infinitepay' ? (
-                  <>
-                    {infinitePayRedirectUrl && (
-                      <a
-                        href={infinitePayRedirectUrl}
-                        className="w-full h-12 rounded font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-95"
-                        style={{ backgroundColor: accentColor }}
-                      >
-                        <ExternalLink className="w-5 h-5" />
-                        <span>IR PARA PAGAMENTO INFINITEPAY (PIX / CARTÃO)</span>
-                      </a>
-                    )}
-
-                    <a
-                      href={whatsappUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full h-12 rounded bg-[#00E676] hover:bg-[#00cf6a] font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-[#0B0D10] flex items-center justify-center gap-2 transition-colors"
-                    >
-                      <MessageCircle className="w-5 h-5" />
-                      <span>ENVIAR PEDIDO NO WHATSAPP</span>
-                    </a>
-                  </>
-                ) : confirmedOrder.paymentMethod === 'credit_card' ? (
-                  <>
-                    {externalPayUrl && (
-                      <a
-                        href={externalPayUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="w-full h-12 rounded font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-95"
-                        style={{ backgroundColor: accentColor }}
-                      >
-                        <ExternalLink className="w-5 h-5" />
-                        <span>IR PARA PAGAMENTO SEGURO NO CARTÃO</span>
-                      </a>
-                    )}
-
-                    <a
-                      href={whatsappUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full h-12 rounded bg-[#00E676] hover:bg-[#00cf6a] font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-[#0B0D10] flex items-center justify-center gap-2 transition-colors"
-                    >
-                      <MessageCircle className="w-5 h-5" />
-                      <span>SOLICITAR LINK DE COBRANÇA NO WHATSAPP</span>
-                    </a>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setShowPixModalBox((prev) => !prev)}
-                      className="w-full h-12 rounded font-display font-extrabold text-base uppercase tracking-wider text-white flex items-center justify-center gap-2"
-                      style={{ backgroundColor: accentColor }}
-                    >
-                      <QrCode className="w-5 h-5" />
-                      <span>Pagar Online Agora (QR Code PIX)</span>
-                    </button>
-
-                    <a
-                      href={whatsappUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full h-12 rounded bg-[#00E676] hover:bg-[#00cf6a] font-display font-extrabold text-base uppercase tracking-wider text-[#0B0D10] flex items-center justify-center gap-2 transition-colors"
-                    >
-                      <MessageCircle className="w-5 h-5" />
-                      <span>Enviar Pedido no WhatsApp</span>
-                    </a>
-                  </>
-                )}
-              </div>
-
-              {/* PIX QR Code & Key Details */}
-              {showPixModalBox && (
-                <div className="p-4 rounded bg-[#161A20] border border-[#272D38] space-y-3">
-                  <p className="text-xs font-display font-bold uppercase tracking-wider text-white text-center">
-                    Escaneie o QR Code ou copie a Chave PIX abaixo
-                  </p>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
-                    <div className="flex justify-center">
-                      <div className="inline-block p-2.5 bg-white rounded">
-                        {store.payment.pixQrCodeImageUrl ? (
-                          <img
-                            src={store.payment.pixQrCodeImageUrl}
-                            alt="QR Code PIX"
-                            className="w-36 h-36 object-contain"
-                          />
-                        ) : (
-                          <QRCodeSVG value={pixPayload} size={144} level="M" />
-                        )}
+            return (
+              <div className="space-y-5">
+                {confirmedOrder.paymentMethod === 'pix' ? (
+                  isPixConfirmedPaid ? (
+                    <div className="p-5 rounded bg-[#00E676]/10 border border-[#00E676] text-center space-y-2">
+                      <CheckCircle2 className="w-12 h-12 text-[#00E676] mx-auto" />
+                      <h3 className="font-display font-extrabold text-2xl uppercase text-[#00E676]">
+                        Pagamento Confirmado!
+                      </h3>
+                      <p className="text-xs text-slate-200 leading-relaxed">
+                        Recebemos a confirmação do seu PIX para o pedido{' '}
+                        <strong className="font-mono-num text-white">#{confirmedOrder.id}</strong>.
+                        Sua NF-e será enviada para{' '}
+                        <strong className="text-white">{confirmedOrder.customer.email}</strong>.
+                      </p>
+                      <div className="pt-1 text-lg font-mono-num font-bold text-[#00E676]">
+                        Valor Pago: {formatBRL(confirmedOrder.totalAmount)}
                       </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 rounded bg-[#161A20] border border-amber-500/50 text-center space-y-2.5">
+                      <div className="inline-flex items-center gap-2 px-3 py-1 rounded bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs font-bold uppercase tracking-wider">
+                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" aria-hidden="true" />
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>Aguardando Pagamento</span>
+                      </div>
+                      <h3 className="font-display font-extrabold text-xl uppercase text-white">
+                        Pedido #{confirmedOrder.id} Registrado
+                      </h3>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        Pague via PIX abaixo. Assim que o pagamento for identificado, esta tela atualizará automaticamente.
+                      </p>
+                      <div className="pt-1 text-xl font-mono-num font-bold text-[#00E676]">
+                        {formatBRL(confirmedOrder.totalAmount)}
+                      </div>
+                      <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                        <span>Verificando status no banco de dados a cada 5 segundos...</span>
+                      </div>
+                    </div>
+                  )
+                ) : (
+                  <div className="p-4 rounded bg-[#161A20] border border-[#00E676]/50 text-center space-y-2">
+                    <CheckCircle2 className="w-10 h-10 text-[#00E676] mx-auto" />
+                    <h3 className="font-display font-extrabold text-2xl uppercase text-white">
+                      Pedido #{confirmedOrder.id} Registrado!
+                    </h3>
+                    <p className="text-xs text-slate-300">
+                      Seus dados fiscais foram salvos com sucesso. A NF-e será enviada para{' '}
+                      <strong className="text-white">{confirmedOrder.customer.email}</strong>.
+                    </p>
+                    <div className="pt-2 text-lg font-mono-num font-bold text-[#00E676]">
+                      Total: {formatBRL(confirmedOrder.totalAmount)}
+                    </div>
+                    {confirmedOrder.paymentMethod === 'credit_card' && (
+                      <div className="text-xs font-mono-num text-slate-200">
+                        Parcelamento selecionado:{' '}
+                        <strong className="text-white">
+                          {confirmedOrder.installments}x de {formatBRL(confirmedOrder.installmentValue)}
+                        </strong>{' '}
+                        ({store.payment.gatewayProvider})
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {confirmedOrder.paymentMethod === 'credit_card' &&
+                  store.payment.creditCardInstructions && (
+                    <div className="p-3 rounded bg-[#161A20] border border-[#272D38] text-xs text-slate-300 leading-relaxed">
+                      {store.payment.creditCardInstructions}
+                    </div>
+                  )}
+
+                {infinitePayError && (
+                  <div className="p-3 rounded bg-red-950/60 border border-red-500/60 text-xs text-red-200 leading-relaxed">
+                    <strong>Aviso InfinitePay:</strong> {infinitePayError}
+                  </div>
+                )}
+
+                {/* Dynamic EMVCo PIX QR Code & Copia e Cola (Always visible when PIX is awaiting payment) */}
+                {confirmedOrder.paymentMethod === 'pix' && !isPixConfirmedPaid && (
+                  <div className="p-4 rounded bg-[#161A20] border border-[#272D38] space-y-4">
+                    <p className="text-xs font-display font-bold uppercase tracking-wider text-white text-center">
+                      Escaneie o QR Code PIX ou copie o código abaixo
+                    </p>
+
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="inline-block p-3 bg-white rounded-md">
+                        <QRCodeSVG value={pixPayload} size={172} level="M" />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(pixPayload);
+                          setCopiedPix(true);
+                          setTimeout(() => setCopiedPix(false), 2500);
+                        }}
+                        className="w-full h-11 rounded font-display font-extrabold text-xs sm:text-sm uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-95"
+                        style={{ backgroundColor: copiedPix ? '#00E676' : accentColor, color: copiedPix ? '#0B0D10' : '#FFFFFF' }}
+                      >
+                        {copiedPix ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                        <span>
+                          {copiedPix
+                            ? 'Código PIX Copiado!'
+                            : 'Copiar Código Pix (Copia e Cola)'}
+                        </span>
+                      </button>
                     </div>
 
                     <div className="space-y-2.5 bg-[#0B0D10] p-3 rounded border border-[#272D38]">
                       <div>
                         <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-300 mb-1">
-                          Chave PIX ({store.payment.pixKeyType})
+                          Chave PIX (CNPJ)
                         </label>
                         <div className="flex items-center gap-1.5">
                           <input
                             type="text"
                             readOnly
-                            value={store.payment.pixKey}
+                            value={store.payment.pixKey || '33279307000122'}
                             onClick={(e) => e.currentTarget.select()}
                             className="w-full h-9 px-2.5 rounded bg-[#161A20] border border-[#272D38] text-xs font-mono-num text-white focus:outline-none"
                           />
                           <button
                             type="button"
                             onClick={() => {
-                              navigator.clipboard?.writeText(store.payment.pixKey);
+                              navigator.clipboard?.writeText(
+                                store.payment.pixKey || '33279307000122'
+                              );
                               setCopiedPixKey(true);
                               setTimeout(() => setCopiedPixKey(false), 2500);
                             }}
@@ -1326,12 +1366,18 @@ export function CartCheckoutDrawer({
 
                       <div className="text-[11px] text-slate-300 space-y-1">
                         <div>
-                          <span className="text-slate-400">Pagamento:</span>{' '}
-                          <strong className="text-white">PIX</strong>
+                          <span className="text-slate-400">Favorecido:</span>{' '}
+                          <strong className="text-white">
+                            {store.payment.pixBeneficiary || 'BTHTECH HARDWARE LTDA'}
+                          </strong>
                         </div>
                         <div>
-                          <span className="text-slate-400">Favorecido:</span>{' '}
-                          <strong className="text-white">{store.payment.pixBeneficiary}</strong>
+                          <span className="text-slate-400">Cidade:</span>{' '}
+                          <strong className="text-white">
+                            {(store.fiscal.storeCityState.split('-')[0] || 'CASCAVEL')
+                              .trim()
+                              .toUpperCase()}
+                          </strong>
                         </div>
                         <div>
                           <span className="text-slate-400">Banco:</span>{' '}
@@ -1340,23 +1386,73 @@ export function CartCheckoutDrawer({
                       </div>
                     </div>
                   </div>
+                )}
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard?.writeText(pixPayload);
-                      setCopiedPix(true);
-                      setTimeout(() => setCopiedPix(false), 2500);
-                    }}
-                    className="w-full h-10 rounded bg-[#272D38] hover:bg-[#363F4E] text-xs font-bold uppercase tracking-wider text-white flex items-center justify-center gap-2"
-                  >
-                    {copiedPix ? <Check className="w-4 h-4 text-[#00E676]" /> : <Copy className="w-4 h-4" />}
-                    <span>{copiedPix ? 'Código PIX Copiado!' : 'Copiar PIX Copia e Cola'}</span>
-                  </button>
+                {/* Hybrid Action Buttons */}
+                <div className="grid grid-cols-1 gap-3">
+                  {confirmedOrder.paymentMethod === 'infinitepay' ? (
+                    <>
+                      {infinitePayRedirectUrl && (
+                        <a
+                          href={infinitePayRedirectUrl}
+                          className="w-full h-12 rounded font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-95"
+                          style={{ backgroundColor: accentColor }}
+                        >
+                          <ExternalLink className="w-5 h-5" />
+                          <span>IR PARA PAGAMENTO INFINITEPAY (CARTÃO / PIX)</span>
+                        </a>
+                      )}
+
+                      <a
+                        href={whatsappUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-12 rounded bg-[#00E676] hover:bg-[#00cf6a] font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-[#0B0D10] flex items-center justify-center gap-2 transition-colors"
+                      >
+                        <MessageCircle className="w-5 h-5" />
+                        <span>ENVIAR PEDIDO NO WHATSAPP</span>
+                      </a>
+                    </>
+                  ) : confirmedOrder.paymentMethod === 'credit_card' ? (
+                    <>
+                      {externalPayUrl && (
+                        <a
+                          href={externalPayUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full h-12 rounded font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-95"
+                          style={{ backgroundColor: accentColor }}
+                        >
+                          <ExternalLink className="w-5 h-5" />
+                          <span>IR PARA PAGAMENTO SEGURO NO CARTÃO</span>
+                        </a>
+                      )}
+
+                      <a
+                        href={whatsappUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-12 rounded bg-[#00E676] hover:bg-[#00cf6a] font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-[#0B0D10] flex items-center justify-center gap-2 transition-colors"
+                      >
+                        <MessageCircle className="w-5 h-5" />
+                        <span>SOLICITAR LINK DE COBRANÇA NO WHATSAPP</span>
+                      </a>
+                    </>
+                  ) : (
+                    <a
+                      href={whatsappUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full h-11 rounded bg-[#161A20] border border-[#00E676]/60 hover:bg-[#00E676]/10 font-display font-extrabold text-xs sm:text-sm uppercase tracking-wider text-[#00E676] flex items-center justify-center gap-2 transition-colors"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      <span>Enviar Comprovante / Falar no WhatsApp</span>
+                    </a>
+                  )}
                 </div>
-              )}
-            </div>
-          )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Drawer Footer Totals */}

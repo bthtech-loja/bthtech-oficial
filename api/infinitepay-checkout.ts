@@ -1,19 +1,4 @@
-import defaultConfig from '../src/defaultConfig.json';
-
 declare const process: { env: Record<string, string | undefined> };
-
-interface ApiRequest {
-  method?: string;
-  headers: Record<string, string | string[] | undefined>;
-  body?: unknown;
-}
-
-interface ApiResponse {
-  status: (code: number) => ApiResponse;
-  json: (payload: unknown) => void;
-  setHeader: (name: string, value: string) => void;
-  end: (body?: string) => void;
-}
 
 interface CheckoutItemInput {
   description?: string;
@@ -25,7 +10,7 @@ interface CheckoutItemInput {
 
 interface InfinitePayLineItem {
   quantity: number;
-  price: number; // integer cents
+  price: number; // integer cents (>= 1)
   description: string;
 }
 
@@ -33,8 +18,7 @@ const INFINITEPAY_CHECKOUT_ENDPOINT =
   'https://api.infinitepay.io/invoices/public/checkout/links';
 const INFINITEPAY_PAYMENT_CHECK_ENDPOINT =
   'https://api.infinitepay.io/invoices/public/checkout/payment_check';
-const DEFAULT_HANDLE =
-  (defaultConfig.infinitePay?.handle || 'bth_solar_distribuidora').trim();
+const DEFAULT_HANDLE = 'bth_solar_distribuidora';
 
 function parseBody(rawBody: unknown): Record<string, unknown> {
   if (!rawBody) return {};
@@ -48,21 +32,23 @@ function parseBody(rawBody: unknown): Record<string, unknown> {
       return {};
     }
   }
-  return typeof rawBody === 'object'
-    ? (rawBody as Record<string, unknown>)
-    : {};
+  if (typeof rawBody === 'object') {
+    return rawBody as Record<string, unknown>;
+  }
+  return {};
 }
 
 function getHeaderValue(
-  headers: Record<string, string | string[] | undefined>,
+  headers: Record<string, string | string[] | undefined> | undefined,
   name: string
 ): string {
+  if (!headers) return '';
   const val = headers[name] ?? headers[name.toLowerCase()];
   if (Array.isArray(val)) return String(val[0] || '').trim();
   return typeof val === 'string' ? val.trim() : '';
 }
 
-function resolveSiteOrigin(req: ApiRequest): string {
+function resolveSiteOrigin(req: any): string {
   const configuredSiteUrl = (
     process.env.PUBLIC_SITE_URL ||
     process.env.SITE_URL ||
@@ -86,7 +72,9 @@ function resolveSiteOrigin(req: ApiRequest): string {
     return `https://${vercelHost}`;
   }
 
-  const host = getHeaderValue(req.headers, 'host') || getHeaderValue(req.headers, 'x-forwarded-host');
+  const host =
+    getHeaderValue(req?.headers, 'host') ||
+    getHeaderValue(req?.headers, 'x-forwarded-host');
   if (host && /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host)) {
     return `http://${host}`;
   }
@@ -97,16 +85,16 @@ function resolveSiteOrigin(req: ApiRequest): string {
   return 'https://bthtech.vercel.app';
 }
 
-function formatBrazilPhone(raw: unknown): string {
+function formatValidBrazilPhone(raw: unknown): string | null {
   const digits = String(raw || '').replace(/\D/g, '');
-  if (!digits) return '';
+  if (!digits) return null;
   if (digits.length === 10 || digits.length === 11) {
     return `+55${digits}`;
   }
   if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) {
     return `+${digits}`;
   }
-  return `+${digits}`;
+  return null;
 }
 
 function sanitizeHandle(rawHandle: unknown): string {
@@ -124,7 +112,6 @@ function buildInfinitePayHeaders(): Record<string, string> {
   const apiKey = (process.env.INFINITEPAY_API_KEY || '').trim();
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
-    headers['X-Api-Key'] = apiKey;
   }
   return headers;
 }
@@ -136,18 +123,20 @@ function buildExactCentItems(
 ): InfinitePayLineItem[] {
   const normalized = rawItems
     .map((item) => {
-      const rawQty = Number(item.quantity);
-      const qty = Number.isFinite(rawQty) ? Math.min(999, Math.max(1, Math.floor(rawQty))) : 1;
+      const rawQty = Number(item?.quantity);
+      const qty = Number.isFinite(rawQty)
+        ? Math.min(999, Math.max(1, Math.floor(rawQty)))
+        : 1;
       const candidateReais =
-        typeof item.unitPrice === 'number'
+        typeof item?.unitPrice === 'number'
           ? item.unitPrice
-          : typeof item.price === 'number'
+          : typeof item?.price === 'number'
           ? item.price
-          : 0;
+          : Number(item?.unitPrice ?? item?.price ?? 0);
       const unitReais =
         Number.isFinite(candidateReais) && candidateReais > 0 ? candidateReais : 0;
       const rawUnitCents = Math.max(0, Math.round(unitReais * 100));
-      const description = String(item.description || item.name || 'Produto BTHTECH')
+      const description = String(item?.description || item?.name || 'Produto BTHTECH')
         .trim()
         .slice(0, 120);
       return {
@@ -162,35 +151,47 @@ function buildExactCentItems(
     return [];
   }
 
+  const totalUnits = normalized.reduce((acc, i) => acc + i.quantity, 0);
   const productsGrossCents = normalized.reduce((acc, i) => acc + i.rawLineCents, 0);
+  const safeDiscountReais =
+    Number.isFinite(Number(discountReais)) && Number(discountReais) > 0
+      ? Number(discountReais)
+      : 0;
+  const maxAllowedDiscountCents = Math.max(0, productsGrossCents - totalUnits);
   const discountCents = Math.min(
-    Math.max(0, Math.round((Number(discountReais) || 0) * 100)),
-    Math.max(0, productsGrossCents - 100)
+    Math.max(0, Math.round(safeDiscountReais * 100)),
+    maxAllowedDiscountCents
   );
-  const productsNetTargetCents = Math.max(100, productsGrossCents - discountCents);
+  const productsNetTargetCents = Math.max(totalUnits, productsGrossCents - discountCents);
 
-  // Distribute discount proportionally so integer cent sum matches productsNetTargetCents exactly
-  const lineTargets: number[] = [];
-  let assignedCents = 0;
-
-  normalized.forEach((item, idx) => {
-    if (idx === normalized.length - 1) {
-      lineTargets.push(Math.max(item.quantity, productsNetTargetCents - assignedCents));
-    } else {
-      const proportional = Math.max(
-        item.quantity,
-        Math.round((item.rawLineCents / productsGrossCents) * productsNetTargetCents)
-      );
-      lineTargets.push(proportional);
-      assignedCents += proportional;
-    }
+  // Proportional allocation guaranteeing exact integer centavos sum and >= 1 cent per unit
+  const lineTargets = normalized.map((item) => {
+    const exact = (item.rawLineCents / productsGrossCents) * productsNetTargetCents;
+    return Math.max(item.quantity, Math.floor(exact));
   });
+
+  let currentSum = lineTargets.reduce((acc, v) => acc + v, 0);
+  let diff = productsNetTargetCents - currentSum;
+
+  // Distribute remaining cents or trim excess safely without ever dropping below item.quantity
+  let cursor = 0;
+  while (diff !== 0 && cursor < normalized.length * 4) {
+    const idx = cursor % normalized.length;
+    if (diff > 0) {
+      lineTargets[idx] += 1;
+      diff -= 1;
+    } else if (lineTargets[idx] > normalized[idx].quantity) {
+      lineTargets[idx] -= 1;
+      diff += 1;
+    }
+    cursor += 1;
+  }
 
   const result: InfinitePayLineItem[] = [];
 
   normalized.forEach((item, idx) => {
     const lineCents = lineTargets[idx];
-    const baseUnitCents = Math.floor(lineCents / item.quantity);
+    const baseUnitCents = Math.max(1, Math.floor(lineCents / item.quantity));
     const remainder = lineCents - baseUnitCents * item.quantity;
 
     if (remainder === 0) {
@@ -213,7 +214,7 @@ function buildExactCentItems(
     } else {
       result.push({
         quantity: 1,
-        price: lineCents,
+        price: Math.max(1, lineCents),
         description: item.description,
       });
     }
@@ -235,38 +236,38 @@ function buildExactCentItems(
   return result;
 }
 
-export default async function handler(req: ApiRequest, res: ApiResponse) {
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Allow', 'POST, OPTIONS');
-    res.status(204).end();
-    return;
-  }
-
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST, OPTIONS');
-    res.status(405).json({ ok: false, error: 'Método não permitido.' });
-    return;
-  }
-
-  const body = parseBody(req.body);
-
-  // Payment verification flow when customer returns from InfinitePay
-  if (body.action === 'verify') {
-    const orderNsu = String(body.order_nsu || body.orderId || '').trim();
-    const transactionNsu = String(body.transaction_nsu || '').trim();
-    const slug = String(body.slug || body.invoice_slug || '').trim();
-    const handle = sanitizeHandle(body.handle);
-
-    if (!orderNsu || !transactionNsu || !slug) {
-      res.status(400).json({
-        ok: false,
-        paid: false,
-        error: 'Parâmetros de verificação InfinitePay incompletos.',
-      });
+export default async function handler(req: any, res: any) {
+  try {
+    if (req?.method === 'OPTIONS') {
+      res.setHeader('Allow', 'POST, OPTIONS');
+      res.status(204).end();
       return;
     }
 
-    try {
+    if (req?.method !== 'POST') {
+      res.setHeader('Allow', 'POST, OPTIONS');
+      res.status(405).json({ ok: false, error: 'Método não permitido.' });
+      return;
+    }
+
+    const body = parseBody(req?.body);
+
+    // Payment verification flow when customer returns from InfinitePay
+    if (body.action === 'verify') {
+      const orderNsu = String(body.order_nsu || body.orderId || '').trim();
+      const transactionNsu = String(body.transaction_nsu || '').trim();
+      const slug = String(body.slug || body.invoice_slug || '').trim();
+      const handle = sanitizeHandle(body.handle);
+
+      if (!orderNsu || !transactionNsu || !slug) {
+        res.status(400).json({
+          ok: false,
+          paid: false,
+          error: 'Parâmetros de verificação InfinitePay incompletos.',
+        });
+        return;
+      }
+
       const checkResp = await fetch(INFINITEPAY_PAYMENT_CHECK_ENDPOINT, {
         method: 'POST',
         headers: buildInfinitePayHeaders(),
@@ -287,11 +288,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
 
       if (!checkResp.ok) {
+        const details = String(
+          checkData.message || checkData.error || checkText || `HTTP ${checkResp.status}`
+        );
         res.status(checkResp.status).json({
           ok: false,
           paid: false,
-          error:
-            String(checkData.message || checkData.error || checkText || 'Erro ao consultar InfinitePay.'),
+          error: details,
         });
         return;
       }
@@ -304,62 +307,69 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         amount: Number(checkData.amount || 0),
       });
       return;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro de rede';
-      res.status(502).json({
+    }
+
+    // Checkout link creation flow
+    const orderId = String(body.orderId || body.order_nsu || '').trim();
+    const handle = sanitizeHandle(body.handle);
+    const rawItems = Array.isArray(body.items) ? (body.items as CheckoutItemInput[]) : [];
+    const shippingCost = Number(body.shippingCost || 0);
+    const discount = Number(body.discount || 0);
+    const rawCustomer =
+      body.customer && typeof body.customer === 'object'
+        ? (body.customer as Record<string, unknown>)
+        : {};
+
+    if (!orderId || orderId.length > 64) {
+      res.status(400).json({
         ok: false,
-        paid: false,
-        error: `Falha ao validar pagamento na InfinitePay: ${msg}`,
+        error: 'Número do pedido (orderId) é obrigatório e deve ter até 64 caracteres.',
       });
       return;
     }
-  }
 
-  // Checkout link creation flow
-  const orderId = String(body.orderId || body.order_nsu || '').trim();
-  const handle = sanitizeHandle(body.handle);
-  const rawItems = Array.isArray(body.items) ? (body.items as CheckoutItemInput[]) : [];
-  const shippingCost = Number(body.shippingCost || 0);
-  const discount = Number(body.discount || 0);
-  const rawCustomer =
-    body.customer && typeof body.customer === 'object'
-      ? (body.customer as Record<string, unknown>)
-      : {};
+    const items = buildExactCentItems(rawItems, shippingCost, discount);
+    if (items.length === 0) {
+      res.status(400).json({
+        ok: false,
+        error: 'Lista de itens do pedido inválida ou com valores zerados.',
+      });
+      return;
+    }
 
-  if (!orderId || orderId.length > 64) {
-    res.status(400).json({ ok: false, error: 'Número do pedido (orderId) é obrigatório e válido.' });
-    return;
-  }
+    const siteOrigin = resolveSiteOrigin(req);
+    const redirectUrl = `${siteOrigin}/?pagamento=sucesso&pedido=${encodeURIComponent(orderId)}`;
+    const webhookUrl = `${siteOrigin}/api/infinitepay-webhook`;
 
-  const items = buildExactCentItems(rawItems, shippingCost, discount);
-  if (items.length === 0) {
-    res.status(400).json({ ok: false, error: 'Lista de itens do pedido inválida.' });
-    return;
-  }
+    const customerPayload: Record<string, string> = {};
+    const customerName = String(rawCustomer.name || rawCustomer.fullName || '').trim();
+    const customerEmail = String(rawCustomer.email || '').trim();
+    const customerPhone = formatValidBrazilPhone(
+      rawCustomer.phone_number || rawCustomer.whatsapp
+    );
 
-  const siteOrigin = resolveSiteOrigin(req);
-  const redirectUrl = `${siteOrigin}/?pagamento=sucesso&pedido=${encodeURIComponent(orderId)}`;
-  const webhookUrl = `${siteOrigin}/api/infinitepay-webhook`;
+    if (customerName) {
+      customerPayload.name = customerName.slice(0, 120);
+    }
+    if (customerEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+      customerPayload.email = customerEmail.slice(0, 120);
+    }
+    if (customerPhone) {
+      customerPayload.phone_number = customerPhone;
+    }
 
-  const customerPayload: Record<string, string> = {
-    name: String(rawCustomer.name || rawCustomer.fullName || 'Cliente BTHTECH').trim(),
-    email: String(rawCustomer.email || '').trim(),
-  };
-  const phoneNumber = formatBrazilPhone(rawCustomer.phone_number || rawCustomer.whatsapp);
-  if (phoneNumber) {
-    customerPayload.phone_number = phoneNumber;
-  }
+    const infinitePayPayload: Record<string, unknown> = {
+      handle,
+      order_nsu: orderId,
+      items,
+      redirect_url: redirectUrl,
+      webhook_url: webhookUrl,
+    };
 
-  const infinitePayPayload = {
-    handle,
-    order_nsu: orderId,
-    items,
-    customer: customerPayload,
-    redirect_url: redirectUrl,
-    webhook_url: webhookUrl,
-  };
+    if (Object.keys(customerPayload).length > 0) {
+      infinitePayPayload.customer = customerPayload;
+    }
 
-  try {
     const upstream = await fetch(INFINITEPAY_CHECKOUT_ENDPOINT, {
       method: 'POST',
       headers: buildInfinitePayHeaders(),
@@ -375,12 +385,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
 
     if (!upstream.ok) {
-      const errDetail = String(
+      const details = String(
         parsed.message || parsed.error || rawText || `HTTP ${upstream.status}`
       );
-      res.status(upstream.status).json({
+      res.status(upstream.status >= 400 ? upstream.status : 502).json({
         ok: false,
-        error: `Erro InfinitePay (${upstream.status}): ${errDetail}`,
+        error: `Erro InfinitePay (${upstream.status}): ${details}`,
       });
       return;
     }
@@ -389,7 +399,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (!checkoutUrl || !/^https:\/\//i.test(checkoutUrl)) {
       res.status(502).json({
         ok: false,
-        error: 'A InfinitePay não retornou uma URL de pagamento válida.',
+        error: `A InfinitePay não retornou uma URL válida. Resposta: ${rawText || 'vazia'}`,
       });
       return;
     }
@@ -401,10 +411,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       order_nsu: orderId,
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Erro de conexão';
-    res.status(502).json({
+    const details = err instanceof Error ? err.message : 'Erro interno inesperado';
+    res.status(500).json({
       ok: false,
-      error: `Falha ao conectar com a API da InfinitePay: ${msg}`,
+      error: details,
     });
   }
 }
