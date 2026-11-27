@@ -249,6 +249,8 @@ export interface Order {
   installmentValue: number;
   totalAmount: number;
   customer: CustomerFiscalData;
+  stockDeducted?: boolean;
+  confirmationEmailSent?: boolean;
   infinitePay?: {
     handle?: string;
     checkoutUrl?: string;

@@ -47,7 +47,7 @@ import {
 import { ResilientImage } from './ResilientImage';
 import { ShippingCalculator } from './ShippingCalculator';
 import { CardBrandsStrip } from './CardBrandsStrip';
-import { sendOrderUpdateEmail } from '../utils/emailService';
+import { sendOrderTemplateEmail } from '../utils/emailService';
 import { fetchCloudStore } from '../utils/supabaseSync';
 
 interface CartCheckoutDrawerProps {
@@ -66,6 +66,18 @@ interface CartCheckoutDrawerProps {
   onRemoveItem: (productId: string) => void;
   onClearCart: () => void;
   onCreateOrder: (order: Order) => Promise<{ ok: boolean; error?: string }> | void;
+  onMarkOrderAsPaid?: (
+    orderId: string,
+    details?: {
+      transactionNsu?: string;
+      slug?: string;
+      captureMethod?: string;
+      receiptUrl?: string;
+      confirmationEmailSent?: boolean;
+    }
+  ) => Promise<{ ok: boolean; order: Order | null; error?: string }>;
+  onMarkOrderEmailSent?: (orderId: string) => Promise<void>;
+  onPaymentApprovedPopup?: (order: Order) => void;
   onRefreshCloud?: () => Promise<unknown> | void;
 }
 
@@ -87,6 +99,9 @@ export function CartCheckoutDrawer({
   onRemoveItem,
   onClearCart,
   onCreateOrder,
+  onMarkOrderAsPaid,
+  onMarkOrderEmailSent,
+  onPaymentApprovedPopup,
   onRefreshCloud,
 }: CartCheckoutDrawerProps) {
   const infinitePayActive = store.payment.infinitePayEnabled ?? true;
@@ -124,6 +139,8 @@ export function CartCheckoutDrawer({
   const [copiedPixKey, setCopiedPixKey] = useState(false);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const submittingOrderRef = useRef(false);
+  const handledPaidPixIdsRef = useRef<Set<string>>(new Set());
+  const wasOpenRef = useRef(false);
 
   const accentColor = store.visual.accentColor || '#FF6500';
 
@@ -323,11 +340,75 @@ export function CartCheckoutDrawer({
   );
 
   useEffect(() => {
+    const justOpened = isOpen && !wasOpenRef.current;
+    wasOpenRef.current = isOpen;
+    if (
+      justOpened &&
+      cart.length > 0 &&
+      step === 'confirmed' &&
+      !PAID_STATUS_SET.has(liveOrderStatus)
+    ) {
+      setStep('cart');
+      setConfirmedOrder(null);
+      setInfinitePayRedirectUrl('');
+      setInfinitePayError('');
+    }
+  }, [isOpen, cart.length, step, liveOrderStatus, PAID_STATUS_SET]);
+
+  useEffect(() => {
     if (!confirmedOrder) return;
     const storeMatch = store.orders.find((o) => o.id === confirmedOrder.id);
     const nextStatus = storeMatch?.status || confirmedOrder.status;
     setLiveOrderStatus(nextStatus);
   }, [confirmedOrder, store.orders]);
+
+  // Trigger cart clearing, confirmation email, and site popup ONLY once payment is confirmed
+  useEffect(() => {
+    if (!confirmedOrder || confirmedOrder.paymentMethod !== 'pix') return;
+    if (!PAID_STATUS_SET.has(liveOrderStatus)) return;
+    if (handledPaidPixIdsRef.current.has(confirmedOrder.id)) return;
+
+    handledPaidPixIdsRef.current.add(confirmedOrder.id);
+
+    const finalizePaidPix = async () => {
+      const storeMatch = store.orders.find((o) => o.id === confirmedOrder.id) || confirmedOrder;
+      const paidRes = await onMarkOrderAsPaid?.(confirmedOrder.id, {
+        captureMethod: 'pix',
+      });
+      const finalOrder = paidRes?.order || storeMatch;
+
+      onClearCart();
+
+      const shouldSendOrderEmail =
+        store.email.emailVerificationEnabled &&
+        (store.email.templates?.orderConfirmed?.enabled ?? true);
+
+      if (shouldSendOrderEmail && !finalOrder.confirmationEmailSent) {
+        const emailRes = await sendOrderTemplateEmail(
+          store.email,
+          finalOrder,
+          'orderConfirmed'
+        ).catch(() => ({ ok: false }));
+        if (emailRes?.ok) {
+          await onMarkOrderEmailSent?.(finalOrder.id);
+        }
+      }
+
+      onPaymentApprovedPopup?.(finalOrder);
+    };
+
+    void finalizePaidPix();
+  }, [
+    confirmedOrder,
+    liveOrderStatus,
+    PAID_STATUS_SET,
+    store.orders,
+    store.email,
+    onMarkOrderAsPaid,
+    onClearCart,
+    onMarkOrderEmailSent,
+    onPaymentApprovedPopup,
+  ]);
 
   useEffect(() => {
     if (!isOpen || step !== 'confirmed' || !confirmedOrder) return;
@@ -473,21 +554,10 @@ export function CartCheckoutDrawer({
           : undefined,
       };
 
-      // 1. Save order first in Supabase (Aguardando Pagamento) & send order confirmation email
+      // 1. Save pending order in Supabase (Aguardando Pagamento) WITHOUT clearing cart or sending email yet
       await onCreateOrder(newOrder);
 
-      const shouldSendOrderEmail =
-        store.email.emailVerificationEnabled &&
-        (store.email.templates?.orderConfirmed?.enabled ?? true);
-
-      await Promise.all([
-        new Promise((resolve) => setTimeout(resolve, 350)),
-        shouldSendOrderEmail
-          ? sendOrderUpdateEmail(store.email, newOrder).catch(() => undefined)
-          : Promise.resolve(),
-      ]);
-
-      // 2. If InfinitePay is selected, create hosted checkout link and redirect automatically
+      // 2. If InfinitePay is selected, create hosted checkout link and redirect (cart stays preserved until payment confirmed)
       if (useInfinitePay) {
         try {
           const checkoutResp = await fetch('/api/infinitepay-checkout', {
@@ -518,8 +588,8 @@ export function CartCheckoutDrawer({
           };
 
           if (checkoutResp.ok && checkoutData.url) {
-            onClearCart();
             setConfirmedOrder(newOrder);
+            setLiveOrderStatus(newOrder.status);
             setInfinitePayRedirectUrl(checkoutData.url);
             setStep('confirmed');
             window.location.href = checkoutData.url;
@@ -536,7 +606,7 @@ export function CartCheckoutDrawer({
         }
       }
 
-      onClearCart();
+      // Keep cart intact while awaiting PIX or InfinitePay confirmation
       setConfirmedOrder(newOrder);
       setLiveOrderStatus(newOrder.status);
       setStep('confirmed');
@@ -1393,15 +1463,37 @@ export function CartCheckoutDrawer({
                   {confirmedOrder.paymentMethod === 'infinitepay' ? (
                     <>
                       {infinitePayRedirectUrl && (
-                        <a
-                          href={infinitePayRedirectUrl}
-                          className="w-full h-12 rounded font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-95"
-                          style={{ backgroundColor: accentColor }}
-                        >
-                          <ExternalLink className="w-5 h-5" />
-                          <span>IR PARA PAGAMENTO INFINITEPAY (CARTÃO / PIX)</span>
-                        </a>
+                        <div className="p-4 rounded bg-[#161A20] border border-[#272D38] text-center space-y-3">
+                          <p className="text-xs font-display font-bold uppercase tracking-wider text-white">
+                            QR Code do Checkout InfinitePay (PIX ou Cartão)
+                          </p>
+                          <div className="inline-block p-2.5 bg-white rounded-md">
+                            <QRCodeSVG value={infinitePayRedirectUrl} size={156} level="M" />
+                          </div>
+                          <a
+                            href={infinitePayRedirectUrl}
+                            className="w-full h-12 rounded font-display font-extrabold text-sm sm:text-base uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-95"
+                            style={{ backgroundColor: accentColor }}
+                          >
+                            <ExternalLink className="w-5 h-5" />
+                            <span>IR PARA PAGAMENTO INFINITEPAY (CARTÃO / PIX)</span>
+                          </a>
+                        </div>
                       )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmedOrder(null);
+                          setInfinitePayRedirectUrl('');
+                          setInfinitePayError('');
+                          setStep('cart');
+                        }}
+                        className="w-full h-11 rounded bg-[#161A20] border border-[#272D38] hover:border-slate-500 font-display font-bold text-xs uppercase tracking-wider text-slate-200 flex items-center justify-center gap-2 transition-colors"
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                        <span>Voltar e Trocar Forma de Pagamento (PIX QR Code)</span>
+                      </button>
 
                       <a
                         href={whatsappUrl}
@@ -1439,15 +1531,30 @@ export function CartCheckoutDrawer({
                       </a>
                     </>
                   ) : (
-                    <a
-                      href={whatsappUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full h-11 rounded bg-[#161A20] border border-[#00E676]/60 hover:bg-[#00E676]/10 font-display font-extrabold text-xs sm:text-sm uppercase tracking-wider text-[#00E676] flex items-center justify-center gap-2 transition-colors"
-                    >
-                      <MessageCircle className="w-4 h-4" />
-                      <span>Enviar Comprovante / Falar no WhatsApp</span>
-                    </a>
+                    <>
+                      {!isPixConfirmedPaid && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfirmedOrder(null);
+                            setStep('cart');
+                          }}
+                          className="w-full h-11 rounded bg-[#161A20] border border-[#272D38] hover:border-slate-500 font-display font-bold text-xs uppercase tracking-wider text-slate-200 flex items-center justify-center gap-2 transition-colors"
+                        >
+                          <ArrowLeft className="w-4 h-4" />
+                          <span>Voltar e Trocar Forma de Pagamento</span>
+                        </button>
+                      )}
+                      <a
+                        href={whatsappUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-11 rounded bg-[#161A20] border border-[#00E676]/60 hover:bg-[#00E676]/10 font-display font-extrabold text-xs sm:text-sm uppercase tracking-wider text-[#00E676] flex items-center justify-center gap-2 transition-colors"
+                      >
+                        <MessageCircle className="w-4 h-4" />
+                        <span>Enviar Comprovante / Falar no WhatsApp</span>
+                      </a>
+                    </>
                   )}
                 </div>
               </div>

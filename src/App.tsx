@@ -19,8 +19,9 @@ import { HeroBanner } from './components/HeroBanner';
 import { ProductCard } from './components/ProductCard';
 import { ProductDetailModal } from './components/ProductDetailModal';
 import { useStore } from './hooks/useStore';
-import { Department, Product, ShippingMethod, ViaCepAddress } from './types/store';
+import { Department, Order, Product, ShippingMethod, ViaCepAddress } from './types/store';
 import { calcPixPrice, formatBRL, roundCurrency } from './utils/formatters';
+import { sendOrderTemplateEmail } from './utils/emailService';
 
 type SortOption = 'featured' | 'price_asc' | 'price_desc' | 'discount';
 
@@ -55,6 +56,7 @@ export default function App() {
     clearCart,
     createOrder,
     markOrderAsPaid,
+    markOrderEmailSent,
     updateOrderStatus,
     updateOrderTracking,
     updateOrderFulfillment,
@@ -93,6 +95,47 @@ export default function App() {
     message?: string;
   } | null>(null);
   const handledReturnRef = useRef(false);
+  const confirmedEmailHandledRef = useRef<Set<string>>(new Set());
+
+  const triggerConfirmedSideEffects = useCallback(
+    async (
+      order: Order | null | undefined,
+      emailConfig = store.email,
+      meta?: {
+        transactionNsu?: string;
+        slug?: string;
+        captureMethod?: string;
+        receiptUrl?: string;
+      }
+    ) => {
+      clearCart();
+      if (!order) return;
+
+      const paidRes = await markOrderAsPaid(order.id, meta);
+      const finalOrder = paidRes.order || order;
+
+      const shouldSendEmail =
+        emailConfig.emailVerificationEnabled &&
+        (emailConfig.templates?.orderConfirmed?.enabled ?? true);
+
+      if (
+        shouldSendEmail &&
+        !finalOrder.confirmationEmailSent &&
+        !confirmedEmailHandledRef.current.has(finalOrder.id)
+      ) {
+        confirmedEmailHandledRef.current.add(finalOrder.id);
+        const emailRes = await sendOrderTemplateEmail(
+          emailConfig,
+          finalOrder,
+          'orderConfirmed'
+        ).catch(() => ({ ok: false }));
+        if (emailRes?.ok) {
+          await markOrderEmailSent(finalOrder.id);
+        }
+      }
+    },
+    [clearCart, markOrderAsPaid, markOrderEmailSent, store.email]
+  );
 
   const verifyReturnedPayment = useCallback(
     async (params: {
@@ -138,13 +181,47 @@ export default function App() {
         }
       }
 
+      const latestOrder = activeStore.orders.find((o) => o.id === params.orderId);
+
       if (verifiedPaid) {
-        await markOrderAsPaid(params.orderId, {
-          transactionNsu: params.transactionNsu,
-          slug: params.slug,
-          captureMethod: resolvedCaptureMethod,
-          receiptUrl: params.receiptUrl,
-        });
+        await triggerConfirmedSideEffects(
+          latestOrder || {
+            id: params.orderId,
+            createdAt: new Date().toISOString(),
+            status: 'Pago',
+            items: [],
+            subtotalBase: 0,
+            discountCouponAmount: 0,
+            pixDiscountAmount: 0,
+            shippingMethod: 'economic',
+            shippingLabel: '',
+            shippingCost: 0,
+            paymentMethod: 'infinitepay',
+            installments: 1,
+            installmentValue: 0,
+            totalAmount: 0,
+            customer: {
+              fullName: '',
+              document: '',
+              email: '',
+              whatsapp: '',
+              cep: '',
+              street: '',
+              number: '',
+              complement: '',
+              neighborhood: '',
+              city: '',
+              state: '',
+            },
+          },
+          activeStore.email,
+          {
+            transactionNsu: params.transactionNsu,
+            slug: params.slug,
+            captureMethod: resolvedCaptureMethod,
+            receiptUrl: params.receiptUrl,
+          }
+        );
         setPaymentReturnModal({
           open: true,
           orderId: params.orderId,
@@ -158,14 +235,19 @@ export default function App() {
       }
 
       // Check if webhook already updated the order status in Supabase
-      const latestOrder = activeStore.orders.find((o) => o.id === params.orderId);
       const isAlreadyPaidInCloud =
         latestOrder &&
         ['Pago', 'Pagamento Aprovado', 'Em Separação', 'Produto Enviado', 'Produto Entregue'].includes(
           latestOrder.status
         );
 
-      if (isAlreadyPaidInCloud) {
+      if (isAlreadyPaidInCloud && latestOrder) {
+        await triggerConfirmedSideEffects(latestOrder, activeStore.email, {
+          transactionNsu: params.transactionNsu,
+          slug: params.slug,
+          captureMethod: latestOrder.infinitePay?.captureMethod || resolvedCaptureMethod,
+          receiptUrl: latestOrder.infinitePay?.receiptUrl || params.receiptUrl,
+        });
         setPaymentReturnModal({
           open: true,
           orderId: params.orderId,
@@ -185,11 +267,11 @@ export default function App() {
           transactionNsu: params.transactionNsu,
           slug: params.slug,
           message:
-            'Aguardando confirmação automática da InfinitePay no banco de dados. Isso leva apenas alguns segundos.',
+            'Seu carrinho continua salvo! Aguardando confirmação da InfinitePay, ou você pode voltar ao carrinho e escolher PIX QR Code.',
         });
       }
     },
-    [markOrderAsPaid, refreshFromCloud, store]
+    [refreshFromCloud, store, triggerConfirmedSideEffects]
   );
 
   useEffect(() => {
@@ -205,7 +287,6 @@ export default function App() {
 
     if ((pagamento === 'sucesso' || (orderId && (transactionNsu || slug))) && orderId) {
       handledReturnRef.current = true;
-      clearCart();
       setPaymentReturnModal({
         open: true,
         orderId,
@@ -223,7 +304,7 @@ export default function App() {
         receiptUrl,
       });
     }
-  }, [clearCart, verifyReturnedPayment]);
+  }, [verifyReturnedPayment]);
 
   // Keep open return confirmation modal synced with latest cloud order status
   useEffect(() => {
@@ -235,6 +316,10 @@ export default function App() {
         match.status
       )
     ) {
+      void triggerConfirmedSideEffects(match, store.email, {
+        captureMethod: match.infinitePay?.captureMethod || paymentReturnModal.captureMethod,
+        receiptUrl: match.infinitePay?.receiptUrl || paymentReturnModal.receiptUrl,
+      });
       setPaymentReturnModal((prev) =>
         prev
           ? {
@@ -246,7 +331,7 @@ export default function App() {
           : null
       );
     }
-  }, [store.orders, paymentReturnModal]);
+  }, [store.orders, store.email, paymentReturnModal, triggerConfirmedSideEffects]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -617,6 +702,20 @@ export default function App() {
         onRemoveItem={removeFromCart}
         onClearCart={clearCart}
         onCreateOrder={createOrder}
+        onMarkOrderAsPaid={markOrderAsPaid}
+        onMarkOrderEmailSent={markOrderEmailSent}
+        onPaymentApprovedPopup={(paidOrder) => {
+          setIsCartOpen(false);
+          setPaymentReturnModal({
+            open: true,
+            orderId: paidOrder.id,
+            phase: 'approved',
+            captureMethod: paidOrder.paymentMethod === 'pix' ? 'pix' : paidOrder.infinitePay?.captureMethod,
+            receiptUrl: paidOrder.infinitePay?.receiptUrl,
+            transactionNsu: paidOrder.infinitePay?.transactionNsu,
+            slug: paidOrder.infinitePay?.slug,
+          });
+        }}
         onRefreshCloud={refreshFromCloud}
       />
 
@@ -664,7 +763,7 @@ export default function App() {
                   <>
                     <CheckCircle2 className="w-12 h-12 text-[#00E676] mx-auto" />
                     <h3 className="font-display font-extrabold text-2xl uppercase tracking-wider text-white">
-                      Pagamento Aprovado!
+                      Pagamento Confirmado!
                     </h3>
                     <p className="text-xs text-slate-300 leading-relaxed">
                       Seu pedido{' '}
@@ -672,7 +771,7 @@ export default function App() {
                         #{paymentReturnModal.orderId}
                       </strong>{' '}
                       foi confirmado com status <strong className="text-[#00E676]">Pago</strong>.
-                      Em breve você receberá a NF-e e o código de rastreio por e-mail.
+                      A mensagem de confirmação foi enviada para o seu e-mail e em breve você receberá a NF-e.
                     </p>
                     {returnedOrder && (
                       <div className="p-3 rounded bg-[#0B0D10] border border-[#272D38] text-xs space-y-1">
@@ -759,6 +858,16 @@ export default function App() {
                       >
                         <RotateCcw className="w-4 h-4" />
                         <span>Verificar Confirmação Agora</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeReturnModal();
+                          setIsCartOpen(true);
+                        }}
+                        className="w-full h-10 rounded bg-[#0B0D10] border border-[#00E676]/60 hover:bg-[#00E676]/10 text-xs font-bold uppercase tracking-wider text-[#00E676]"
+                      >
+                        Trocar Forma de Pagamento (Abrir Carrinho)
                       </button>
                       <button
                         type="button"

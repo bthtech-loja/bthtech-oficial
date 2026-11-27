@@ -609,12 +609,21 @@ export function useStore() {
     }
   }, []);
 
-  const createOrder = useCallback(
-    async (order: Order): Promise<{ ok: boolean; error?: string }> => {
-      markImmediateCloudMutation(true);
-      immediateNotifyRef.current = false;
-      const prev = storeRef.current;
-      const updatedProducts = prev.products.map((prod) => {
+  const PAID_STATUS_SET = useMemo(
+    () =>
+      new Set<OrderStatus>([
+        'Pago',
+        'Pagamento Aprovado',
+        'Em Separação',
+        'Produto Enviado',
+        'Produto Entregue',
+      ]),
+    []
+  );
+
+  const deductOrderStockFromProducts = useCallback(
+    (products: Product[], order: Order): Product[] => {
+      return products.map((prod) => {
         const bought = order.items.find((i) => i.productId === prod.id);
         if (!bought) return prod;
         return {
@@ -622,10 +631,27 @@ export function useStore() {
           stock: Math.max(0, prod.stock - bought.quantity),
         };
       });
+    },
+    []
+  );
+
+  const createOrder = useCallback(
+    async (order: Order): Promise<{ ok: boolean; error?: string }> => {
+      markImmediateCloudMutation(true);
+      immediateNotifyRef.current = false;
+      const prev = storeRef.current;
+      const isImmediatePaid = PAID_STATUS_SET.has(order.status);
+      const orderWithFlags: Order = {
+        ...order,
+        stockDeducted: Boolean(order.stockDeducted || isImmediatePaid),
+      };
+      const updatedProducts = isImmediatePaid
+        ? deductOrderStockFromProducts(prev.products, orderWithFlags)
+        : prev.products;
       const nextState: StoreState = {
         ...prev,
         products: updatedProducts,
-        orders: [order, ...prev.orders],
+        orders: [orderWithFlags, ...prev.orders],
       };
       storeRef.current = nextState;
       try {
@@ -636,7 +662,7 @@ export function useStore() {
       setStore(nextState);
       return enqueueCloudUpsert(nextState, { notify: true });
     },
-    [enqueueCloudUpsert, markImmediateCloudMutation]
+    [PAID_STATUS_SET, deductOrderStockFromProducts, enqueueCloudUpsert, markImmediateCloudMutation]
   );
 
   const markOrderAsPaid = useCallback(
@@ -647,6 +673,7 @@ export function useStore() {
         slug?: string;
         captureMethod?: string;
         receiptUrl?: string;
+        confirmationEmailSent?: boolean;
       }
     ): Promise<{ ok: boolean; order: Order | null; error?: string }> => {
       const prev = storeRef.current;
@@ -655,14 +682,18 @@ export function useStore() {
         return { ok: false, order: null, error: 'Pedido não encontrado.' };
       }
 
-      const alreadyPaid =
-        existing.status === 'Pago' ||
-        existing.status === 'Pagamento Aprovado' ||
-        existing.status === 'Em Separação' ||
-        existing.status === 'Produto Enviado' ||
-        existing.status === 'Produto Entregue';
+      const alreadyPaid = PAID_STATUS_SET.has(existing.status);
+      const needsStockDeduction = !existing.stockDeducted;
+      const needsEmailFlagUpdate =
+        typeof details?.confirmationEmailSent === 'boolean' &&
+        details.confirmationEmailSent !== existing.confirmationEmailSent;
 
-      if (alreadyPaid && (!details?.transactionNsu || existing.infinitePay?.transactionNsu)) {
+      if (
+        alreadyPaid &&
+        !needsStockDeduction &&
+        !needsEmailFlagUpdate &&
+        (!details?.transactionNsu || existing.infinitePay?.transactionNsu)
+      ) {
         return { ok: true, order: existing };
       }
 
@@ -676,6 +707,11 @@ export function useStore() {
           statusHistory: alreadyPaid
             ? o.statusHistory
             : buildUpdatedStatusHistory(o.statusHistory, 'Pago', o.createdAt),
+          stockDeducted: true,
+          confirmationEmailSent:
+            typeof details?.confirmationEmailSent === 'boolean'
+              ? details.confirmationEmailSent
+              : o.confirmationEmailSent,
           infinitePay: {
             ...(o.infinitePay || {}),
             transactionNsu: details?.transactionNsu || o.infinitePay?.transactionNsu,
@@ -688,7 +724,15 @@ export function useStore() {
         return updatedOrder;
       });
 
-      const nextState: StoreState = { ...prev, orders: nextOrders };
+      const nextProducts = needsStockDeduction
+        ? deductOrderStockFromProducts(prev.products, existing)
+        : prev.products;
+
+      const nextState: StoreState = {
+        ...prev,
+        products: nextProducts,
+        orders: nextOrders,
+      };
       markImmediateCloudMutation(true);
       immediateNotifyRef.current = false;
       storeRef.current = nextState;
@@ -701,26 +745,61 @@ export function useStore() {
       const syncRes = await enqueueCloudUpsert(nextState, { notify: true });
       return { ok: syncRes.ok, order: updatedOrder, error: syncRes.error };
     },
+    [PAID_STATUS_SET, deductOrderStockFromProducts, enqueueCloudUpsert, markImmediateCloudMutation]
+  );
+
+  const markOrderEmailSent = useCallback(
+    async (orderId: string): Promise<void> => {
+      const prev = storeRef.current;
+      const existing = prev.orders.find((o) => o.id === orderId);
+      if (!existing || existing.confirmationEmailSent) return;
+      const nextState: StoreState = {
+        ...prev,
+        orders: prev.orders.map((o) =>
+          o.id === orderId ? { ...o, confirmationEmailSent: true } : o
+        ),
+      };
+      markImmediateCloudMutation(false);
+      storeRef.current = nextState;
+      try {
+        localStorage.setItem(STORE_STORAGE_KEY, JSON.stringify(nextState));
+      } catch {
+        // Ignore storage quota warnings gracefully
+      }
+      setStore(nextState);
+      await enqueueCloudUpsert(nextState, { notify: false });
+    },
     [enqueueCloudUpsert, markImmediateCloudMutation]
   );
 
   const updateOrderStatus = useCallback(
     (orderId: string, status: OrderStatus) => {
       markImmediateCloudMutation();
-      setStore((prev) => ({
-        ...prev,
-        orders: prev.orders.map((o) =>
-          o.id === orderId
-            ? {
-                ...o,
-                status,
-                statusHistory: buildUpdatedStatusHistory(o.statusHistory, status, o.createdAt),
-              }
-            : o
-        ),
-      }));
+      setStore((prev) => {
+        const target = prev.orders.find((o) => o.id === orderId);
+        const shouldDeduct = Boolean(
+          target && !target.stockDeducted && PAID_STATUS_SET.has(status)
+        );
+        return {
+          ...prev,
+          products:
+            shouldDeduct && target
+              ? deductOrderStockFromProducts(prev.products, target)
+              : prev.products,
+          orders: prev.orders.map((o) =>
+            o.id === orderId
+              ? {
+                  ...o,
+                  status,
+                  stockDeducted: o.stockDeducted || shouldDeduct,
+                  statusHistory: buildUpdatedStatusHistory(o.statusHistory, status, o.createdAt),
+                }
+              : o
+          ),
+        };
+      });
     },
-    [markImmediateCloudMutation]
+    [PAID_STATUS_SET, deductOrderStockFromProducts, markImmediateCloudMutation]
   );
 
   const updateOrderTracking = useCallback(
@@ -743,23 +822,34 @@ export function useStore() {
     ): Order | null => {
       let updatedOrder: Order | null = null;
       markImmediateCloudMutation();
-      setStore((prev) => ({
-        ...prev,
-        orders: prev.orders.map((o) => {
-          if (o.id !== orderId) return o;
-          updatedOrder = {
-            ...o,
-            status: updates.status,
-            statusHistory: buildUpdatedStatusHistory(o.statusHistory, updates.status, o.createdAt),
-            trackingCode: updates.trackingCode.trim(),
-            nfeInfo: updates.nfeInfo.trim(),
-          };
-          return updatedOrder;
-        }),
-      }));
+      setStore((prev) => {
+        const target = prev.orders.find((o) => o.id === orderId);
+        const shouldDeduct = Boolean(
+          target && !target.stockDeducted && PAID_STATUS_SET.has(updates.status)
+        );
+        return {
+          ...prev,
+          products:
+            shouldDeduct && target
+              ? deductOrderStockFromProducts(prev.products, target)
+              : prev.products,
+          orders: prev.orders.map((o) => {
+            if (o.id !== orderId) return o;
+            updatedOrder = {
+              ...o,
+              status: updates.status,
+              stockDeducted: o.stockDeducted || shouldDeduct,
+              statusHistory: buildUpdatedStatusHistory(o.statusHistory, updates.status, o.createdAt),
+              trackingCode: updates.trackingCode.trim(),
+              nfeInfo: updates.nfeInfo.trim(),
+            };
+            return updatedOrder;
+          }),
+        };
+      });
       return updatedOrder;
     },
-    [markImmediateCloudMutation]
+    [PAID_STATUS_SET, deductOrderStockFromProducts, markImmediateCloudMutation]
   );
 
   const upsertProduct = useCallback(
@@ -994,6 +1084,7 @@ export function useStore() {
     clearCart,
     createOrder,
     markOrderAsPaid,
+    markOrderEmailSent,
     updateOrderStatus,
     updateOrderTracking,
     updateOrderFulfillment,
