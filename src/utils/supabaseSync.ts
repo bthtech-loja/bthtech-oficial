@@ -12,7 +12,7 @@ const SUPABASE_URL = (
 const SUPABASE_ANON_KEY = (
   (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ||
   defaultConfig.supabase?.anonKey ||
-  'sb_publishable_9ip-3TaQYG9ENG3pw0d1Og_8ntFKBsq'
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl6amVsbXJvaWtsZWR1ZGRlbnRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU3ODk5NjAsImV4cCI6MjExMTM2NTk2MH0.g82yYkBMIqosqI_JkGlU4zPMkD3dh72rOBCWUFRIqkk'
 ).trim();
 
 const SUPABASE_TABLE = (defaultConfig.supabase?.table || 'bthtech_store').trim();

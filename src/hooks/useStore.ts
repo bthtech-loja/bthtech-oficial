@@ -287,10 +287,13 @@ export function useStore() {
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(loadActiveCustomerId);
 
   // Supabase cloud sync coordination refs (anti-overwrite & serialized uploads)
+  const storeRef = useRef(store);
+  storeRef.current = store;
   const cloudReadyRef = useRef(false);
   const isApplyingCloudRef = useRef(false);
   const lastCloudHashRef = useRef('');
   const pendingUploadsCountRef = useRef(0);
+  const mutationVersionRef = useRef(0);
   const uploadChainRef = useRef<Promise<void>>(Promise.resolve());
   const debounceTimerRef = useRef<number | null>(null);
   const immediateFlushRef = useRef(false);
@@ -318,12 +321,19 @@ export function useStore() {
 
   const refreshFromCloud = useCallback(async () => {
     if (isRefreshingRef.current) return;
-    if (pendingUploadsCountRef.current > 0) return;
+    if (pendingUploadsCountRef.current > 0 || debounceTimerRef.current !== null) return;
 
     isRefreshingRef.current = true;
+    const startMutationVersion = mutationVersionRef.current;
     try {
       const res = await fetchCloudStore();
-      if (pendingUploadsCountRef.current > 0) return;
+      if (
+        pendingUploadsCountRef.current > 0 ||
+        debounceTimerRef.current !== null ||
+        mutationVersionRef.current !== startMutationVersion
+      ) {
+        return;
+      }
 
       if (res.status === 'found') {
         const normalized = normalizeStoreState(res.data);
@@ -341,7 +351,7 @@ export function useStore() {
         cloudReadyRef.current = true;
       } else if (res.status === 'empty') {
         if (!cloudReadyRef.current) {
-          const seedState = normalizeStoreState(INITIAL_STORE_STATE);
+          const seedState = normalizeStoreState(storeRef.current || INITIAL_STORE_STATE);
           const serialized = JSON.stringify(seedState);
           lastCloudHashRef.current = serialized;
           isApplyingCloudRef.current = true;
@@ -355,7 +365,7 @@ export function useStore() {
           enqueueCloudUpsert(seedState);
         }
       }
-      // On 'error', keep cloudReadyRef unchanged to avoid overwriting existing cloud data
+      // On 'error', keep cloudReadyRef unchanged to avoid overwriting existing cloud data on passive reads
     } finally {
       isRefreshingRef.current = false;
     }
@@ -487,50 +497,65 @@ export function useStore() {
     setCart([]);
   }, []);
 
-  const createOrder = useCallback((order: Order) => {
+  const markImmediateCloudMutation = useCallback(() => {
+    mutationVersionRef.current += 1;
+    cloudReadyRef.current = true;
     immediateFlushRef.current = true;
-    setStore((prev) => {
-      const updatedProducts = prev.products.map((prod) => {
-        const bought = order.items.find((i) => i.productId === prod.id);
-        if (!bought) return prod;
+  }, []);
+
+  const createOrder = useCallback(
+    (order: Order) => {
+      markImmediateCloudMutation();
+      setStore((prev) => {
+        const updatedProducts = prev.products.map((prod) => {
+          const bought = order.items.find((i) => i.productId === prod.id);
+          if (!bought) return prod;
+          return {
+            ...prod,
+            stock: Math.max(0, prod.stock - bought.quantity),
+          };
+        });
         return {
-          ...prod,
-          stock: Math.max(0, prod.stock - bought.quantity),
+          ...prev,
+          products: updatedProducts,
+          orders: [order, ...prev.orders],
         };
       });
-      return {
+    },
+    [markImmediateCloudMutation]
+  );
+
+  const updateOrderStatus = useCallback(
+    (orderId: string, status: OrderStatus) => {
+      markImmediateCloudMutation();
+      setStore((prev) => ({
         ...prev,
-        products: updatedProducts,
-        orders: [order, ...prev.orders],
-      };
-    });
-  }, []);
+        orders: prev.orders.map((o) =>
+          o.id === orderId
+            ? {
+                ...o,
+                status,
+                statusHistory: buildUpdatedStatusHistory(o.statusHistory, status, o.createdAt),
+              }
+            : o
+        ),
+      }));
+    },
+    [markImmediateCloudMutation]
+  );
 
-  const updateOrderStatus = useCallback((orderId: string, status: OrderStatus) => {
-    immediateFlushRef.current = true;
-    setStore((prev) => ({
-      ...prev,
-      orders: prev.orders.map((o) =>
-        o.id === orderId
-          ? {
-              ...o,
-              status,
-              statusHistory: buildUpdatedStatusHistory(o.statusHistory, status, o.createdAt),
-            }
-          : o
-      ),
-    }));
-  }, []);
-
-  const updateOrderTracking = useCallback((orderId: string, trackingCode: string) => {
-    immediateFlushRef.current = true;
-    setStore((prev) => ({
-      ...prev,
-      orders: prev.orders.map((o) =>
-        o.id === orderId ? { ...o, trackingCode: trackingCode.trim() } : o
-      ),
-    }));
-  }, []);
+  const updateOrderTracking = useCallback(
+    (orderId: string, trackingCode: string) => {
+      markImmediateCloudMutation();
+      setStore((prev) => ({
+        ...prev,
+        orders: prev.orders.map((o) =>
+          o.id === orderId ? { ...o, trackingCode: trackingCode.trim() } : o
+        ),
+      }));
+    },
+    [markImmediateCloudMutation]
+  );
 
   const updateOrderFulfillment = useCallback(
     (
@@ -538,7 +563,7 @@ export function useStore() {
       updates: { status: OrderStatus; trackingCode: string; nfeInfo: string }
     ): Order | null => {
       let updatedOrder: Order | null = null;
-      immediateFlushRef.current = true;
+      markImmediateCloudMutation();
       setStore((prev) => ({
         ...prev,
         orders: prev.orders.map((o) => {
@@ -555,29 +580,35 @@ export function useStore() {
       }));
       return updatedOrder;
     },
-    []
+    [markImmediateCloudMutation]
   );
 
-  const upsertProduct = useCallback((product: Product) => {
-    immediateFlushRef.current = true;
-    setStore((prev) => {
-      const exists = prev.products.some((p) => p.id === product.id);
-      return {
-        ...prev,
-        products: exists
-          ? prev.products.map((p) => (p.id === product.id ? product : p))
-          : [product, ...prev.products],
-      };
-    });
-  }, []);
+  const upsertProduct = useCallback(
+    (product: Product) => {
+      markImmediateCloudMutation();
+      setStore((prev) => {
+        const exists = prev.products.some((p) => p.id === product.id);
+        return {
+          ...prev,
+          products: exists
+            ? prev.products.map((p) => (p.id === product.id ? product : p))
+            : [product, ...prev.products],
+        };
+      });
+    },
+    [markImmediateCloudMutation]
+  );
 
-  const deleteProduct = useCallback((productId: string) => {
-    immediateFlushRef.current = true;
-    setStore((prev) => ({
-      ...prev,
-      products: prev.products.filter((p) => p.id !== productId),
-    }));
-  }, []);
+  const deleteProduct = useCallback(
+    (productId: string) => {
+      markImmediateCloudMutation();
+      setStore((prev) => ({
+        ...prev,
+        products: prev.products.filter((p) => p.id !== productId),
+      }));
+    },
+    [markImmediateCloudMutation]
+  );
 
   const loginCustomer = useCallback(
     (identifier: string, password: string): { ok: boolean; message: string } => {
@@ -620,7 +651,7 @@ export function useStore() {
         favoriteProductIds: [],
         createdAt: new Date().toISOString(),
       };
-      immediateFlushRef.current = true;
+      markImmediateCloudMutation();
       setStore((prev) => ({
         ...prev,
         customers: [newCustomer, ...prev.customers],
@@ -628,20 +659,23 @@ export function useStore() {
       setActiveCustomerId(newCustomer.id);
       return { ok: true, message: 'Conta criada com sucesso!' };
     },
-    [store.customers]
+    [store.customers, markImmediateCloudMutation]
   );
 
   const logoutCustomer = useCallback(() => {
     setActiveCustomerId(null);
   }, []);
 
-  const updateCustomerAccount = useCallback((updated: CustomerAccount) => {
-    immediateFlushRef.current = true;
-    setStore((prev) => ({
-      ...prev,
-      customers: prev.customers.map((c) => (c.id === updated.id ? updated : c)),
-    }));
-  }, []);
+  const updateCustomerAccount = useCallback(
+    (updated: CustomerAccount) => {
+      markImmediateCloudMutation();
+      setStore((prev) => ({
+        ...prev,
+        customers: prev.customers.map((c) => (c.id === updated.id ? updated : c)),
+      }));
+    },
+    [markImmediateCloudMutation]
+  );
 
   const resetCustomerPassword = useCallback(
     (customerId: string, newPassword: string): { ok: boolean; message: string } => {
@@ -649,7 +683,7 @@ export function useStore() {
       if (!found) {
         return { ok: false, message: 'Conta não encontrada.' };
       }
-      immediateFlushRef.current = true;
+      markImmediateCloudMutation();
       setStore((prev) => ({
         ...prev,
         customers: prev.customers.map((c) =>
@@ -659,13 +693,13 @@ export function useStore() {
       setActiveCustomerId(customerId);
       return { ok: true, message: 'Senha redefinida com sucesso!' };
     },
-    [store.customers]
+    [store.customers, markImmediateCloudMutation]
   );
 
   const toggleFavoriteProduct = useCallback(
     (productId: string): boolean => {
       if (!activeCustomerId) return false;
-      immediateFlushRef.current = true;
+      markImmediateCloudMutation();
       setStore((prev) => ({
         ...prev,
         customers: prev.customers.map((c) => {
@@ -681,7 +715,7 @@ export function useStore() {
       }));
       return true;
     },
-    [activeCustomerId]
+    [activeCustomerId, markImmediateCloudMutation]
   );
 
   const exportBackupJson = useCallback(() => {
@@ -701,21 +735,43 @@ export function useStore() {
     URL.revokeObjectURL(url);
   }, [store]);
 
-  const importBackupJson = useCallback((jsonText: string): { ok: boolean; message: string } => {
-    try {
-      const parsed = JSON.parse(jsonText);
-      const data = parsed.store ? parsed.store : parsed;
-      if (!data || !Array.isArray(data.products) || !data.visual || !data.fiscal) {
-        return { ok: false, message: 'Arquivo JSON inválido ou incompatível com o formato BTHTECH.' };
+  const importBackupJson = useCallback(
+    (jsonText: string): { ok: boolean; message: string } => {
+      try {
+        const parsed = JSON.parse(jsonText);
+        const data = parsed.store ? parsed.store : parsed;
+        if (!data || !Array.isArray(data.products) || !data.visual || !data.fiscal) {
+          return {
+            ok: false,
+            message: 'Arquivo JSON inválido ou incompatível com o formato BTHTECH.',
+          };
+        }
+        const imported = normalizeStoreState(data);
+        if (debounceTimerRef.current !== null) {
+          window.clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
+        }
+        markImmediateCloudMutation();
+        try {
+          localStorage.setItem(STORE_STORAGE_KEY, JSON.stringify(imported));
+        } catch {
+          // Ignore storage quota warnings gracefully
+        }
+        enqueueCloudUpsert(imported);
+        setStore(imported);
+        return {
+          ok: true,
+          message: 'Configurações, produtos, clientes e pedidos restaurados com sucesso!',
+        };
+      } catch {
+        return {
+          ok: false,
+          message: 'Erro ao ler o arquivo JSON. Verifique se o arquivo está íntegro.',
+        };
       }
-      const imported = normalizeStoreState(data);
-      immediateFlushRef.current = true;
-      setStore(imported);
-      return { ok: true, message: 'Configurações, produtos, clientes e pedidos restaurados com sucesso!' };
-    } catch {
-      return { ok: false, message: 'Erro ao ler o arquivo JSON. Verifique se o arquivo está íntegro.' };
-    }
-  }, []);
+    },
+    [enqueueCloudUpsert, markImmediateCloudMutation]
+  );
 
   const saveStoreChanges = useCallback(
     (overrideStore?: StoreState): { ok: boolean; message: string } => {
@@ -726,11 +782,10 @@ export function useStore() {
           window.clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = null;
         }
+        markImmediateCloudMutation();
+        enqueueCloudUpsert(target);
         if (overrideStore) {
-          immediateFlushRef.current = true;
           setStore(overrideStore);
-        } else if (cloudReadyRef.current) {
-          enqueueCloudUpsert(target);
         }
         return { ok: true, message: 'Todas as alterações foram salvas com sucesso!' };
       } catch {
@@ -741,7 +796,7 @@ export function useStore() {
         };
       }
     },
-    [store, enqueueCloudUpsert]
+    [store, enqueueCloudUpsert, markImmediateCloudMutation]
   );
 
   return {
