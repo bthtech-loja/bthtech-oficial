@@ -132,6 +132,17 @@ function normalizeEmailConfig(rawEmail: unknown): EmailConfig {
   };
 }
 
+const TEST_JULIANO_CLEANUP_KEY = 'bthtech_cleaned_test_juliano_v1';
+
+function isTestJulianoCustomer(name?: string): boolean {
+  const normalized = (name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+  return normalized === 'juliano fernandes';
+}
+
 function loadInitialStore(): StoreState {
   try {
     const raw = localStorage.getItem(STORE_STORAGE_KEY);
@@ -154,6 +165,26 @@ function loadInitialStore(): StoreState {
           .map((s) => s.trim())
           .filter(Boolean)
       : INITIAL_STORE_STATE.visual.topPromoNotices;
+
+    let resolvedCustomers = Array.isArray(parsed.customers) ? parsed.customers : [];
+    const alreadyCleanedTestJuliano =
+      localStorage.getItem(TEST_JULIANO_CLEANUP_KEY) === '1';
+
+    if (!alreadyCleanedTestJuliano) {
+      const removedIds = new Set(
+        resolvedCustomers
+          .filter((c) => isTestJulianoCustomer(c?.fullName))
+          .map((c) => c.id)
+      );
+      if (removedIds.size > 0) {
+        resolvedCustomers = resolvedCustomers.filter((c) => !removedIds.has(c.id));
+        const activeId = localStorage.getItem(ACTIVE_CUSTOMER_KEY);
+        if (activeId && removedIds.has(activeId)) {
+          localStorage.removeItem(ACTIVE_CUSTOMER_KEY);
+        }
+      }
+      localStorage.setItem(TEST_JULIANO_CLEANUP_KEY, '1');
+    }
 
     return {
       ...INITIAL_STORE_STATE,
@@ -210,7 +241,7 @@ function loadInitialStore(): StoreState {
           : INITIAL_STORE_STATE.products,
       coupons: Array.isArray(parsed.coupons) ? parsed.coupons : INITIAL_STORE_STATE.coupons,
       orders: normalizeOrders(parsed.orders),
-      customers: Array.isArray(parsed.customers) ? parsed.customers : [],
+      customers: resolvedCustomers,
     };
   } catch {
     return INITIAL_STORE_STATE;

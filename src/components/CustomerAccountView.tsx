@@ -212,7 +212,11 @@ export function CustomerAccountView({
   const [regState, setRegState] = useState('');
   const [regCepLoading, setRegCepLoading] = useState(false);
 
-  // EmailJS 6-digit OTP verification state
+  // Email 6-digit OTP verification & temporary pendingRegistration state
+  const [pendingRegistration, setPendingRegistration] = useState<Omit<
+    CustomerAccount,
+    'id' | 'createdAt' | 'favoriteProductIds'
+  > | null>(null);
   const [otpStepActive, setOtpStepActive] = useState(false);
   const [generatedOtp, setGeneratedOtp] = useState('');
   const [enteredOtp, setEnteredOtp] = useState('');
@@ -431,57 +435,36 @@ export function CustomerAccountView({
       resetForgotFlow();
     };
 
-    const completeRegistration = () => {
-      const initialAddress: SavedAddress = {
-        id: `addr-${Date.now()}`,
-        label: 'Principal',
-        cep: maskCEP(regCep),
-        street: regStreet.trim(),
-        number: regNumber.trim(),
-        complement: regComplement.trim(),
-        neighborhood: regNeighborhood.trim(),
-        city: regCity.trim(),
-        state: regState.trim().toUpperCase(),
-        isDefault: true,
-      };
+    const dispatchOtpCode = async (
+      draftOverride?: Omit<CustomerAccount, 'id' | 'createdAt' | 'favoriteProductIds'>
+    ) => {
+      const targetDraft = draftOverride || pendingRegistration;
+      if (!targetDraft) return false;
 
-      const res = onRegister({
-        fullName: regName.trim(),
-        document: maskCpfCnpj(regDocument),
-        email: regEmail.trim(),
-        whatsapp: maskPhoneBR(regWhatsapp),
-        password: regPassword,
-        addresses: [initialAddress],
-      });
-      if (!res.ok) {
-        setAuthError(res.message);
-      } else {
-        setOtpStepActive(false);
-        setGeneratedOtp('');
-        setEnteredOtp('');
-        setOtpInfoMsg('');
-      }
-    };
-
-    const dispatchOtpCode = async () => {
       const code = generateOtpCode();
       setOtpSending(true);
       setAuthError('');
       setOtpInfoMsg('');
+
       const result = await sendVerificationEmail(store.email, {
-        user_name: regName.trim(),
-        to_email: regEmail.trim(),
+        user_name: targetDraft.fullName,
+        to_email: targetDraft.email,
         verification_code: code,
+        forceRequired: true,
       });
+
       setOtpSending(false);
       if (!result.ok) {
         setAuthError(result.message);
         return false;
       }
+
+      setPendingRegistration(targetDraft);
       setGeneratedOtp(code);
+      setEnteredOtp('');
       setOtpStepActive(true);
       setOtpInfoMsg(
-        `Enviamos um código de 6 dígitos para ${regEmail.trim()}. Confira sua caixa de entrada ou spam.`
+        `Enviamos um código de 6 dígitos para ${targetDraft.email}. Confira sua caixa de entrada ou spam.`
       );
       return true;
     };
@@ -533,26 +516,58 @@ export function CustomerAccountView({
         return;
       }
 
-      const verificationActive =
-        store.email.emailVerificationEnabled &&
-        (store.email.templates?.verification?.enabled ?? true);
+      const initialAddress: SavedAddress = {
+        id: `addr-${Date.now()}`,
+        label: 'Principal',
+        cep: maskCEP(regCep),
+        street: regStreet.trim(),
+        number: regNumber.trim(),
+        complement: regComplement.trim(),
+        neighborhood: regNeighborhood.trim(),
+        city: regCity.trim(),
+        state: regState.trim().toUpperCase(),
+        isDefault: true,
+      };
 
-      if (verificationActive) {
-        await dispatchOtpCode();
-        return;
-      }
+      const draftRegistration: Omit<
+        CustomerAccount,
+        'id' | 'createdAt' | 'favoriteProductIds'
+      > = {
+        fullName: regName.trim(),
+        document: maskCpfCnpj(regDocument),
+        email: regEmail.trim(),
+        whatsapp: maskPhoneBR(regWhatsapp),
+        password: regPassword,
+        addresses: [initialAddress],
+      };
 
-      completeRegistration();
+      await dispatchOtpCode(draftRegistration);
     };
 
     const handleConfirmOtp = (e: React.FormEvent) => {
       e.preventDefault();
       setAuthError('');
+      if (!pendingRegistration || !generatedOtp) {
+        setAuthError('Sessão de verificação expirada. Preencha os dados novamente.');
+        setOtpStepActive(false);
+        return;
+      }
       if (enteredOtp.trim() !== generatedOtp) {
         setAuthError('Código de verificação inválido. Confira os 6 dígitos enviados ao seu e-mail.');
         return;
       }
-      completeRegistration();
+
+      const res = onRegister(pendingRegistration);
+      if (!res.ok) {
+        setAuthError(res.message);
+        return;
+      }
+
+      setPendingRegistration(null);
+      setOtpStepActive(false);
+      setGeneratedOtp('');
+      setEnteredOtp('');
+      setOtpInfoMsg('');
     };
 
     return (
@@ -847,7 +862,7 @@ export function CustomerAccountView({
                   </button>
                 </p>
               </form>
-            ) : otpStepActive ? (
+            ) : otpStepActive && pendingRegistration ? (
               <form onSubmit={handleConfirmOtp} className="space-y-4">
                 <div className="p-4 rounded bg-[#0B0D10] border border-[#00E676]/40 space-y-2">
                   <div className="flex items-center gap-2 text-[#00E676] font-display font-bold text-base uppercase tracking-wider">
@@ -856,7 +871,7 @@ export function CustomerAccountView({
                   </div>
                   <p className="text-xs text-slate-300 leading-relaxed">
                     {otpInfoMsg ||
-                      `Digite o código numérico de 6 dígitos enviado para ${regEmail.trim()}.`}
+                      `Enviamos um código de 6 dígitos para ${pendingRegistration.email}.`}
                   </p>
                 </div>
 
@@ -887,22 +902,25 @@ export function CustomerAccountView({
                   style={{ backgroundColor: accentColor }}
                 >
                   <ShieldCheck className="w-4 h-4" />
-                  <span>Confirmar Código e Criar Conta</span>
+                  <span>Confirmar Código e Ativar Conta</span>
                 </button>
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
                   <button
                     type="button"
                     disabled={otpSending}
-                    onClick={dispatchOtpCode}
+                    onClick={() => void dispatchOtpCode()}
                     className="font-semibold text-[#00E676] hover:underline disabled:opacity-50"
                   >
-                    {otpSending ? 'Reenviando código...' : 'Reenviar código de 6 dígitos'}
+                    {otpSending ? 'Reenviando código...' : 'Reenviar Código'}
                   </button>
                   <button
                     type="button"
                     onClick={() => {
                       setOtpStepActive(false);
+                      setPendingRegistration(null);
+                      setGeneratedOtp('');
+                      setEnteredOtp('');
                       setAuthError('');
                     }}
                     className="text-slate-400 hover:text-white underline"
@@ -1109,12 +1127,7 @@ export function CustomerAccountView({
                   ) : (
                     <>
                       <UserPlus className="w-4 h-4" />
-                      <span>
-                        {store.email.emailVerificationEnabled &&
-                        (store.email.templates?.verification?.enabled ?? true)
-                          ? 'Enviar Código de Confirmação'
-                          : 'Criar Minha Conta'}
-                      </span>
+                      <span>Cadastrar / Criar Conta</span>
                     </>
                   )}
                 </button>

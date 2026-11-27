@@ -794,10 +794,11 @@ export async function sendVerificationEmail(
     verification_code: string;
     subject?: string;
     isTest?: boolean;
+    forceRequired?: boolean;
   }
 ): Promise<{ ok: boolean; message: string }> {
   const template = resolveEmailTemplate(config, 'verification');
-  if (!params.isTest && !template.enabled) {
+  if (!params.isTest && !params.forceRequired && !template.enabled) {
     return {
       ok: false,
       message:
