@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowUpDown, RotateCcw } from 'lucide-react';
+import { AlertCircle, ArrowUpDown, CheckCircle2, Cloud, RotateCcw, X } from 'lucide-react';
 import { AdminPanel } from './components/AdminPanel';
 import { CartCheckoutDrawer } from './components/CartCheckoutDrawer';
 import { CustomerAccountView } from './components/CustomerAccountView';
@@ -37,6 +37,8 @@ export default function App() {
     setStore,
     saveStoreChanges,
     refreshFromCloud,
+    cloudSyncNotice,
+    clearCloudSyncNotice,
     cart,
     addToCart,
     updateCartQty,
@@ -196,21 +198,57 @@ export default function App() {
     }
   };
 
+  const cloudToast = cloudSyncNotice ? (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`fixed bottom-5 right-5 z-[110] max-w-md flex items-start gap-2.5 px-4 py-3 rounded-md border shadow-2xl text-xs sm:text-sm font-semibold transition-all ${
+        cloudSyncNotice.ok
+          ? 'bg-[#161A20] border-[#00E676] text-[#00E676]'
+          : 'bg-[#161A20] border-red-500 text-red-200'
+      }`}
+    >
+      {cloudSyncNotice.ok ? (
+        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#00E676]" />
+      ) : (
+        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-400" />
+      )}
+      <div className="flex-1 min-w-0 leading-snug break-words">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider opacity-80 mb-0.5">
+          <Cloud className="w-3 h-3" />
+          <span>Supabase Cloud</span>
+        </div>
+        <span>{cloudSyncNotice.message}</span>
+      </div>
+      <button
+        type="button"
+        onClick={clearCloudSyncNotice}
+        className="p-0.5 text-slate-400 hover:text-white shrink-0"
+        aria-label="Fechar aviso"
+      >
+        <X className="w-4 h-4" />
+      </button>
+    </div>
+  ) : null;
+
   if (isAdminView) {
     return (
-      <AdminPanel
-        store={store}
-        setStore={setStore}
-        onSaveChanges={saveStoreChanges}
-        onUpsertProduct={upsertProduct}
-        onDeleteProduct={deleteProduct}
-        onUpdateOrderStatus={updateOrderStatus}
-        onUpdateOrderTracking={updateOrderTracking}
-        onUpdateOrderFulfillment={updateOrderFulfillment}
-        onExportJson={exportBackupJson}
-        onImportJson={importBackupJson}
-        onExitAdmin={goHome}
-      />
+      <>
+        <AdminPanel
+          store={store}
+          setStore={setStore}
+          onSaveChanges={saveStoreChanges}
+          onUpsertProduct={upsertProduct}
+          onDeleteProduct={deleteProduct}
+          onUpdateOrderStatus={updateOrderStatus}
+          onUpdateOrderTracking={updateOrderTracking}
+          onUpdateOrderFulfillment={updateOrderFulfillment}
+          onExportJson={exportBackupJson}
+          onImportJson={importBackupJson}
+          onExitAdmin={goHome}
+        />
+        {cloudToast}
+      </>
     );
   }
 
@@ -367,6 +405,7 @@ export default function App() {
       )}
 
       <Footer
+        logoUrl={store.visual.logoUrl}
         fiscal={store.fiscal}
         officialEmail={store.email.officialEmail}
         payment={store.payment}
@@ -414,6 +453,7 @@ export default function App() {
         onCreateOrder={createOrder}
         onRefreshCloud={refreshFromCloud}
       />
+      {cloudToast}
     </div>
   );
 }

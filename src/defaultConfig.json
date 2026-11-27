@@ -4,11 +4,14 @@
     "cnpj": "33.279.307/0001-22",
     "stateRegistration": ""
   },
+  "visual": {
+    "logoUrl": "https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png"
+  },
   "emailConfig": {
     "officialEmail": "contato.bthtech@gmail.com",
     "emailVerificationEnabled": true,
     "gmailScriptUrl": "https://script.google.com/macros/s/AKfycbwK1zXLKBBZA47F3XWSROmIaRLOk_ggRIYoGpUjl4e3emFj_J0sIWRLg-ib3HoU3kNS/exec",
-    "emailLogoUrl": "https://googleusercontent.com"
+    "emailLogoUrl": "https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png"
   },
   "supabase": {
     "url": "https://yzjelmroikleduddentc.supabase.co",

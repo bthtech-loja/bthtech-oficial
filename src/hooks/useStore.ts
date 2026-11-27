@@ -127,7 +127,13 @@ function normalizeEmailConfig(rawEmail: unknown): EmailConfig {
         : typeof emailObj.emailJsEnabled === 'boolean'
         ? emailObj.emailJsEnabled
         : defaults.emailVerificationEnabled,
-    emailLogoUrl: (emailObj.emailLogoUrl || '').trim() || defaults.emailLogoUrl,
+    emailLogoUrl: (() => {
+      const candidate = (emailObj.emailLogoUrl || '').trim();
+      if (!candidate || candidate === 'https://googleusercontent.com') {
+        return defaults.emailLogoUrl;
+      }
+      return candidate;
+    })(),
     templates: {
       verification: mergeTemplate('verification'),
       orderConfirmed: mergeTemplate('orderConfirmed'),
@@ -198,6 +204,7 @@ function normalizeStoreState(
     visual: {
       ...INITIAL_STORE_STATE.visual,
       ...(parsed.visual || {}),
+      logoUrl: (parsed.visual?.logoUrl || '').trim() || INITIAL_STORE_STATE.visual.logoUrl,
       topPromoText: cleanedTopPromo,
       topPromoNotices: resolvedNotices,
       banners:
@@ -285,6 +292,11 @@ export function useStore() {
   const [store, setStore] = useState<StoreState>(loadInitialStore);
   const [cart, setCart] = useState<CartItem[]>(loadInitialCart);
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(loadActiveCustomerId);
+  const [cloudSyncNotice, setCloudSyncNotice] = useState<{
+    id: number;
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   // Supabase cloud sync coordination refs (anti-overwrite & serialized uploads)
   const storeRef = useRef(store);
@@ -297,27 +309,68 @@ export function useStore() {
   const uploadChainRef = useRef<Promise<void>>(Promise.resolve());
   const debounceTimerRef = useRef<number | null>(null);
   const immediateFlushRef = useRef(false);
+  const immediateNotifyRef = useRef(false);
   const isRefreshingRef = useRef(false);
+  const noticeTimerRef = useRef<number | null>(null);
 
   const currentCustomer = useMemo(() => {
     if (!activeCustomerId) return null;
     return store.customers.find((c) => c.id === activeCustomerId) || null;
   }, [store.customers, activeCustomerId]);
 
-  const enqueueCloudUpsert = useCallback((snapshot: StoreState) => {
-    const serialized = JSON.stringify(snapshot);
-    lastCloudHashRef.current = serialized;
-    pendingUploadsCountRef.current += 1;
-
-    uploadChainRef.current = uploadChainRef.current
-      .then(async () => {
-        await upsertCloudStore(snapshot);
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        pendingUploadsCountRef.current = Math.max(0, pendingUploadsCountRef.current - 1);
-      });
+  const clearCloudSyncNotice = useCallback(() => {
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = null;
+    }
+    setCloudSyncNotice(null);
   }, []);
+
+  const showCloudSyncNotice = useCallback((ok: boolean, message: string) => {
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = null;
+    }
+    setCloudSyncNotice({ id: Date.now(), ok, message });
+    noticeTimerRef.current = window.setTimeout(
+      () => {
+        noticeTimerRef.current = null;
+        setCloudSyncNotice(null);
+      },
+      ok ? 4500 : 8500
+    );
+  }, []);
+
+  const enqueueCloudUpsert = useCallback(
+    (snapshot: StoreState, options?: { notify?: boolean }) => {
+      const serialized = JSON.stringify(snapshot);
+      lastCloudHashRef.current = serialized;
+      pendingUploadsCountRef.current += 1;
+
+      uploadChainRef.current = uploadChainRef.current
+        .then(async () => {
+          const res = await upsertCloudStore(snapshot);
+          if (options?.notify) {
+            showCloudSyncNotice(
+              res.ok,
+              res.ok
+                ? res.message || 'Sincronizado na nuvem com sucesso!'
+                : res.error || 'Erro ao sincronizar na nuvem.'
+            );
+          }
+        })
+        .catch((err: unknown) => {
+          if (options?.notify) {
+            const msg = err instanceof Error ? err.message : 'Erro desconhecido';
+            showCloudSyncNotice(false, `Erro ao sincronizar na nuvem: ${msg}`);
+          }
+        })
+        .finally(() => {
+          pendingUploadsCountRef.current = Math.max(0, pendingUploadsCountRef.current - 1);
+        });
+    },
+    [showCloudSyncNotice]
+  );
 
   const refreshFromCloud = useCallback(async () => {
     if (isRefreshingRef.current) return;
@@ -410,16 +463,19 @@ export function useStore() {
     if (isApplyingCloudRef.current) {
       isApplyingCloudRef.current = false;
       immediateFlushRef.current = false;
+      immediateNotifyRef.current = false;
       return;
     }
 
     if (!cloudReadyRef.current) {
       immediateFlushRef.current = false;
+      immediateNotifyRef.current = false;
       return;
     }
 
     if (serialized === lastCloudHashRef.current) {
       immediateFlushRef.current = false;
+      immediateNotifyRef.current = false;
       return;
     }
 
@@ -429,8 +485,10 @@ export function useStore() {
     }
 
     if (immediateFlushRef.current) {
+      const shouldNotify = immediateNotifyRef.current;
       immediateFlushRef.current = false;
-      enqueueCloudUpsert(store);
+      immediateNotifyRef.current = false;
+      enqueueCloudUpsert(store, { notify: shouldNotify });
       return;
     }
 
@@ -497,10 +555,13 @@ export function useStore() {
     setCart([]);
   }, []);
 
-  const markImmediateCloudMutation = useCallback(() => {
+  const markImmediateCloudMutation = useCallback((notify = true) => {
     mutationVersionRef.current += 1;
     cloudReadyRef.current = true;
     immediateFlushRef.current = true;
+    if (notify) {
+      immediateNotifyRef.current = true;
+    }
   }, []);
 
   const createOrder = useCallback(
@@ -699,7 +760,7 @@ export function useStore() {
   const toggleFavoriteProduct = useCallback(
     (productId: string): boolean => {
       if (!activeCustomerId) return false;
-      markImmediateCloudMutation();
+      markImmediateCloudMutation(false);
       setStore((prev) => ({
         ...prev,
         customers: prev.customers.map((c) => {
@@ -751,13 +812,14 @@ export function useStore() {
           window.clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = null;
         }
-        markImmediateCloudMutation();
+        markImmediateCloudMutation(true);
+        immediateNotifyRef.current = false;
         try {
           localStorage.setItem(STORE_STORAGE_KEY, JSON.stringify(imported));
         } catch {
           // Ignore storage quota warnings gracefully
         }
-        enqueueCloudUpsert(imported);
+        enqueueCloudUpsert(imported, { notify: true });
         setStore(imported);
         return {
           ok: true,
@@ -782,8 +844,9 @@ export function useStore() {
           window.clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = null;
         }
-        markImmediateCloudMutation();
-        enqueueCloudUpsert(target);
+        markImmediateCloudMutation(true);
+        immediateNotifyRef.current = false;
+        enqueueCloudUpsert(target, { notify: true });
         if (overrideStore) {
           setStore(overrideStore);
         }
@@ -804,6 +867,8 @@ export function useStore() {
     setStore,
     saveStoreChanges,
     refreshFromCloud,
+    cloudSyncNotice,
+    clearCloudSyncNotice,
     cart,
     addToCart,
     updateCartQty,

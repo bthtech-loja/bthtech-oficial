@@ -1,10 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FileText, Mail, MessageCircle, Settings, ShieldCheck, Truck, X } from 'lucide-react';
+import defaultConfig from '../defaultConfig.json';
 import { FiscalConfig, PaymentConfig, ShippingConfig } from '../types/store';
 import { formatBRL } from '../utils/formatters';
 import { CardBrandsStrip } from './CardBrandsStrip';
 
+const OFFICIAL_LOGO_URL =
+  defaultConfig.visual?.logoUrl ||
+  'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png';
+
 interface FooterProps {
+  logoUrl?: string;
   fiscal: FiscalConfig;
   officialEmail: string;
   payment: PaymentConfig;
@@ -14,6 +20,7 @@ interface FooterProps {
 }
 
 export function Footer({
+  logoUrl,
   fiscal,
   officialEmail,
   payment,
@@ -22,6 +29,16 @@ export function Footer({
   onOpenAdmin,
 }: FooterProps) {
   const [warrantyModalOpen, setWarrantyModalOpen] = useState(false);
+  const [footerLogoSrc, setFooterLogoSrc] = useState(
+    (logoUrl || '').trim() || OFFICIAL_LOGO_URL
+  );
+  const [footerLogoFailed, setFooterLogoFailed] = useState(false);
+
+  useEffect(() => {
+    setFooterLogoSrc((logoUrl || '').trim() || OFFICIAL_LOGO_URL);
+    setFooterLogoFailed(false);
+  }, [logoUrl]);
+
   const cleanPhone = fiscal.whatsappNumber.replace(/\D/g, '');
   const displayOfficialEmail = (officialEmail || fiscal.storeEmail || '').trim();
 
@@ -80,7 +97,22 @@ export function Footer({
 
         {/* Bottom Store Info + Official Contact + Warranty + Admin Trigger */}
         <div className="pt-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs text-slate-400">
-          <div className="space-y-1">
+          <div className="space-y-1.5">
+            {!footerLogoFailed && (
+              <img
+                src={footerLogoSrc}
+                alt="BTHTECH Logo"
+                referrerPolicy="no-referrer"
+                onError={() => {
+                  if (footerLogoSrc !== OFFICIAL_LOGO_URL) {
+                    setFooterLogoSrc(OFFICIAL_LOGO_URL);
+                  } else {
+                    setFooterLogoFailed(true);
+                  }
+                }}
+                className="h-10 sm:h-12 w-auto max-w-[200px] object-contain bg-transparent mb-1"
+              />
+            )}
             <p className="text-white font-semibold">
               {fiscal.corporateName} · CNPJ: {fiscal.cnpj}
               {fiscal.stateRegistration?.trim()

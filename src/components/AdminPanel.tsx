@@ -500,7 +500,7 @@ export function AdminPanel({
                       onChange={(e) =>
                         setStore((p) => ({ ...p, visual: { ...p.visual, logoUrl: e.target.value } }))
                       }
-                      placeholder="Deixe vazio para usar o logotipo tipográfico BTHTECH"
+                      placeholder="https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png"
                       className="flex-1 h-10 px-3 rounded bg-[#0B0D10] border border-[#272D38] text-xs text-white"
                     />
                     <label className="px-3 h-10 rounded bg-[#272D38] hover:bg-[#353D4C] text-xs font-semibold flex items-center gap-1.5 cursor-pointer shrink-0">
@@ -2740,7 +2740,7 @@ export function AdminPanel({
                         email: { ...p.email, emailLogoUrl: e.target.value },
                       }))
                     }
-                    placeholder="https://googleusercontent.com"
+                    placeholder="https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png"
                     className="w-full h-10 px-3 rounded bg-[#0B0D10] border border-[#272D38] text-xs font-mono-num text-white"
                   />
                   <p className="text-[11px] text-slate-400 mt-1">

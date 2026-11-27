@@ -1,85 +1,71 @@
-import defaultConfig from '../defaultConfig.json';
 import { StoreState } from '../types/store';
 
-const SUPABASE_URL = (
-  (import.meta.env.VITE_SUPABASE_URL as string | undefined) ||
-  defaultConfig.supabase?.url ||
-  'https://yzjelmroikleduddentc.supabase.co'
-)
-  .trim()
-  .replace(/\/+$/, '');
+const SUPABASE_URL = 'https://yzjelmroikleduddentc.supabase.co';
+const SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl6amVsbXJvaWtsZWR1ZGRlbnRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU3ODk5NjAsImV4cCI6MjExMTM2NTk2MH0.g82yYkBMIqosqI_JkGlU4zPMkD3dh72rOBCWUFRIqkk';
+const SUPABASE_TABLE = 'bthtech_store';
+const SUPABASE_ROW_ID = 'main_store';
+const SUPABASE_REST_ENDPOINT = `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}`;
 
-const SUPABASE_ANON_KEY = (
-  (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ||
-  defaultConfig.supabase?.anonKey ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl6amVsbXJvaWtsZWR1ZGRlbnRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU3ODk5NjAsImV4cCI6MjExMTM2NTk2MH0.g82yYkBMIqosqI_JkGlU4zPMkD3dh72rOBCWUFRIqkk'
-).trim();
-
-const SUPABASE_TABLE = (defaultConfig.supabase?.table || 'bthtech_store').trim();
-const SUPABASE_ROW_ID = (defaultConfig.supabase?.rowId || 'main_store').trim();
-
-export function hasValidSupabaseEndpoint(): boolean {
-  try {
-    const parsed = new URL(SUPABASE_URL);
-    if (parsed.protocol !== 'https:') return false;
-    // Bare https://supabase.co without a <project-ref> subdomain is not a REST API host
-    const host = parsed.hostname.toLowerCase();
-    if (host === 'supabase.co' || host === 'www.supabase.co') return false;
-    return host.length > 0 && SUPABASE_ANON_KEY.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-function buildRestEndpoint(query = ''): string {
-  return `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}${query}`;
-}
-
-function buildHeaders(extra?: Record<string, string>): Record<string, string> {
-  return {
-    apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-    ...(extra || {}),
-  };
-}
+const SUPABASE_HEADERS: Record<string, string> = {
+  apikey: SUPABASE_ANON_KEY,
+  Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+  'Content-Type': 'application/json',
+  Prefer: 'resolution=merge-duplicates,return=representation',
+};
 
 export type CloudFetchResult =
-  | { status: 'found'; data: Partial<StoreState>; updatedAt: string }
+  | { status: 'found'; data: Partial<StoreState> }
   | { status: 'empty' }
   | { status: 'error'; reason: string };
 
 interface SupabaseStoreRow {
-  id: string;
+  id?: string;
   data: Partial<StoreState> | null;
-  updated_at?: string;
+}
+
+async function extractSupabaseError(response: Response): Promise<string> {
+  try {
+    const raw = await response.text();
+    if (!raw) return `HTTP ${response.status} ${response.statusText}`.trim();
+    try {
+      const parsed = JSON.parse(raw) as {
+        message?: string;
+        details?: string;
+        hint?: string;
+        error?: string;
+      };
+      const parts = [parsed.message, parsed.details, parsed.hint, parsed.error].filter(Boolean);
+      if (parts.length > 0) {
+        return `HTTP ${response.status}: ${parts.join(' — ')}`;
+      }
+    } catch {
+      // Plain text error body
+    }
+    return `HTTP ${response.status}: ${raw}`;
+  } catch {
+    return `HTTP ${response.status} ${response.statusText}`.trim();
+  }
 }
 
 export async function fetchCloudStore(): Promise<CloudFetchResult> {
-  if (!hasValidSupabaseEndpoint()) {
-    return { status: 'error', reason: 'missing_project_subdomain' };
-  }
-
   try {
     const response = await fetch(
-      buildRestEndpoint(
-        `?id=eq.${encodeURIComponent(SUPABASE_ROW_ID)}&select=id,data,updated_at`
-      ),
+      `${SUPABASE_REST_ENDPOINT}?id=eq.${SUPABASE_ROW_ID}&select=data`,
       {
         method: 'GET',
-        headers: buildHeaders({
-          Accept: 'application/json',
-        }),
+        headers: SUPABASE_HEADERS,
         cache: 'no-store',
       }
     );
 
     if (!response.ok) {
-      return { status: 'error', reason: `http_${response.status}` };
+      return { status: 'error', reason: await extractSupabaseError(response) };
     }
 
     const rows = (await response.json()) as SupabaseStoreRow[];
     if (!Array.isArray(rows)) {
-      return { status: 'error', reason: 'invalid_payload' };
+      return { status: 'error', reason: 'Resposta inválida do Supabase.' };
     }
 
     if (rows.length === 0) {
@@ -94,27 +80,20 @@ export async function fetchCloudStore(): Promise<CloudFetchResult> {
     return {
       status: 'found',
       data: row.data,
-      updatedAt: row.updated_at || '',
     };
-  } catch {
-    return { status: 'error', reason: 'network_error' };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Erro de rede';
+    return { status: 'error', reason: `Falha de conexão com Supabase: ${msg}` };
   }
 }
 
 export async function upsertCloudStore(
   storeData: StoreState
-): Promise<{ ok: boolean; reason?: string }> {
-  if (!hasValidSupabaseEndpoint()) {
-    return { ok: false, reason: 'missing_project_subdomain' };
-  }
-
+): Promise<{ ok: boolean; message?: string; error?: string }> {
   try {
-    const response = await fetch(buildRestEndpoint(), {
+    const response = await fetch(SUPABASE_REST_ENDPOINT, {
       method: 'POST',
-      headers: buildHeaders({
-        'Content-Type': 'application/json',
-        Prefer: 'resolution=merge-duplicates',
-      }),
+      headers: SUPABASE_HEADERS,
       body: JSON.stringify({
         id: SUPABASE_ROW_ID,
         data: storeData,
@@ -123,11 +102,13 @@ export async function upsertCloudStore(
     });
 
     if (!response.ok) {
-      return { ok: false, reason: `http_${response.status}` };
+      const detail = await extractSupabaseError(response);
+      return { ok: false, error: `Falha ao salvar na nuvem (${detail})` };
     }
 
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: 'network_error' };
+    return { ok: true, message: 'Sincronizado na nuvem com sucesso!' };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Erro de rede';
+    return { ok: false, error: `Falha de conexão com Supabase: ${msg}` };
   }
 }

@@ -1,8 +1,12 @@
 import { Search, ShoppingCart, User, X } from 'lucide-react';
-import type { CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
+import defaultConfig from '../defaultConfig.json';
 import { Department, TopPromoSpeed } from '../types/store';
 import { formatBRL } from '../utils/formatters';
-import { ResilientImage } from './ResilientImage';
+
+const OFFICIAL_LOGO_URL =
+  defaultConfig.visual?.logoUrl ||
+  'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png';
 
 export const DEPARTMENTS: Department[] = [
   'TODOS',
@@ -56,6 +60,16 @@ export function Header({
   onOpenAccount,
   onGoHome,
 }: HeaderProps) {
+  const [logoSrc, setLogoSrc] = useState(
+    (logoUrl || '').trim() || OFFICIAL_LOGO_URL
+  );
+  const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+
+  useEffect(() => {
+    setLogoSrc((logoUrl || '').trim() || OFFICIAL_LOGO_URL);
+    setLogoLoadFailed(false);
+  }, [logoUrl]);
+
   const firstCustomerName = currentCustomerName?.trim().split(' ')[0] || '';
   const activeNotices = (
     Array.isArray(topPromoNotices)
@@ -119,31 +133,31 @@ export function Header({
       {/* Main Sticky Full-Width Header */}
       <header className="sticky top-0 z-40 w-full bg-[#0B0D10]/95 backdrop-blur-md border-b border-[#272D38]">
         <div className="w-full px-4 sm:px-6 lg:px-8 h-16 sm:h-20 flex items-center justify-between gap-3 sm:gap-4">
-          {/* Logo Left (48px-56px height, no surrounding box/background) */}
+          {/* Logo Left (48px-56px height, official BTHTECH logo) */}
           <button
             type="button"
             onClick={onGoHome}
             className="flex items-center shrink-0 h-12 sm:h-14 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white rounded"
             aria-label="BTHTECH Página Inicial"
           >
-            {logoUrl ? (
-              <ResilientImage
-                src={logoUrl}
+            {!logoLoadFailed ? (
+              <img
+                src={logoSrc}
                 alt="BTHTECH Logo"
+                referrerPolicy="no-referrer"
+                onError={() => {
+                  if (logoSrc !== OFFICIAL_LOGO_URL) {
+                    setLogoSrc(OFFICIAL_LOGO_URL);
+                  } else {
+                    setLogoLoadFailed(true);
+                  }
+                }}
                 className="h-12 sm:h-14 w-auto max-w-[220px] sm:max-w-[260px] object-contain bg-transparent"
               />
             ) : (
-              <div className="flex items-center gap-2.5">
-                <span
-                  className="w-10 h-10 sm:w-11 sm:h-11 rounded flex items-center justify-center font-display font-extrabold text-xl sm:text-2xl text-white tracking-tight shrink-0"
-                  style={{ backgroundColor: accentColor }}
-                >
-                  B
-                </span>
-                <span className="font-display font-extrabold text-2xl sm:text-3xl tracking-wider text-white uppercase whitespace-nowrap leading-none">
-                  BTH<span style={{ color: accentColor }}>TECH</span>
-                </span>
-              </div>
+              <span className="font-display font-extrabold text-2xl sm:text-3xl tracking-wider text-white uppercase whitespace-nowrap leading-none">
+                BTH<span style={{ color: accentColor }}>TECH</span>
+              </span>
             )}
           </button>
 

@@ -166,10 +166,15 @@ function resolveEffectiveEmailConfig(config: EmailConfig): EmailConfig {
       (config.gmailScriptUrl || '').trim() ||
       (fallback?.gmailScriptUrl || '').trim() ||
       DEFAULT_GMAIL_SCRIPT_URL,
-    emailLogoUrl:
-      (config.emailLogoUrl || '').trim() ||
-      (fallback?.emailLogoUrl || '').trim() ||
-      'https://googleusercontent.com',
+    emailLogoUrl: (() => {
+      const candidate =
+        (config.emailLogoUrl || '').trim() ||
+        (fallback?.emailLogoUrl || '').trim();
+      if (!candidate || candidate === 'https://googleusercontent.com') {
+        return 'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png';
+      }
+      return candidate;
+    })(),
     emailVerificationEnabled:
       typeof config.emailVerificationEnabled === 'boolean'
         ? config.emailVerificationEnabled
@@ -246,7 +251,7 @@ export function buildOtpEmailHtml(params: {
     codigo: params.verificationCode.trim(),
     user_name: params.customerName.trim() || 'Cliente',
     verification_code: params.verificationCode.trim(),
-    logo_url: (params.logoUrl || 'https://googleusercontent.com').trim(),
+    logo_url: (params.logoUrl || 'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png').trim(),
     email_oficial: (params.officialEmail || 'contato.bthtech@gmail.com').trim(),
   };
 
@@ -351,7 +356,7 @@ function getOrderVars(
     transportadora: getCarrierLabel(order),
     nfe: nfeDisplay,
     link_nfe_pdf: resolveNfeLinkUrl(nfeRaw),
-    logo_url: (logoUrl || 'https://googleusercontent.com').trim(),
+    logo_url: (logoUrl || 'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png').trim(),
     email_oficial: (officialEmail || 'contato.bthtech@gmail.com').trim(),
   };
 }
@@ -788,7 +793,7 @@ export function renderCustomHtmlPreview(
   }
 
   const sampleOrder = createSampleOrder(templateKey, config.officialEmail);
-  const logoUrl = (config.emailLogoUrl || 'https://googleusercontent.com').trim();
+  const logoUrl = (config.emailLogoUrl || 'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png').trim();
   const officialEmail = (config.officialEmail || 'contato.bthtech@gmail.com').trim();
   const orderVars = getOrderVars(sampleOrder, logoUrl, officialEmail);
 
@@ -844,7 +849,7 @@ export async function sendVerificationEmail(
   const html_body = buildOtpEmailHtml({
     customerName: params.user_name,
     verificationCode: params.verification_code,
-    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://googleusercontent.com',
+    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png',
     officialEmail: check.effectiveConfig.officialEmail,
     template,
   });
@@ -911,7 +916,7 @@ export async function sendOrderTemplateEmail(
     order,
     templateKey,
     template,
-    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://googleusercontent.com',
+    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png',
     officialEmail: check.effectiveConfig.officialEmail,
   });
 
@@ -998,7 +1003,7 @@ export function buildPasswordResetEmailHtml(params: {
 }): string {
   const safeName = escapeHtml(params.customerName.trim() || 'Cliente');
   const safeCode = escapeHtml(params.resetCode.trim());
-  const safeLogo = escapeHtml((params.logoUrl || 'https://googleusercontent.com').trim());
+  const safeLogo = escapeHtml((params.logoUrl || 'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png').trim());
   const safeOfficialEmail = escapeHtml(
     (params.officialEmail || 'contato.bthtech@gmail.com').trim()
   );
@@ -1080,7 +1085,7 @@ export async function sendPasswordResetEmail(
   const html_body = buildPasswordResetEmailHtml({
     customerName: params.customerName,
     resetCode: code,
-    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://googleusercontent.com',
+    logoUrl: check.effectiveConfig.emailLogoUrl || 'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png',
     officialEmail: check.effectiveConfig.officialEmail,
   });
 

@@ -6,7 +6,9 @@ const defaultFlashEnd = new Date(Date.now() + 18 * 60 * 60 * 1000).toISOString()
 
 export const INITIAL_STORE_STATE: StoreState = {
   visual: {
-    logoUrl: '',
+    logoUrl:
+      defaultConfig.visual?.logoUrl ||
+      'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png',
     topPromoText: 'FRETE RÁPIDO PARA TODO O BRASIL • 10% OFF NO PIX',
     topPromoNotices: ['FRETE RÁPIDO PARA TODO O BRASIL', '10% OFF NO PIX'],
     topPromoSpeed: 'normal',
@@ -264,7 +266,10 @@ export const INITIAL_STORE_STATE: StoreState = {
     gmailScriptUrl:
       defaultConfig.emailConfig.gmailScriptUrl ||
       'https://script.google.com/macros/s/AKfycbwK1zXLKBBZA47F3XWSROmIaRLOk_ggRIYoGpUjl4e3emFj_J0sIWRLg-ib3HoU3kNS/exec',
-    emailLogoUrl: defaultConfig.emailConfig.emailLogoUrl || 'https://googleusercontent.com',
+    emailLogoUrl:
+      defaultConfig.emailConfig.emailLogoUrl ||
+      defaultConfig.visual?.logoUrl ||
+      'https://i.postimg.cc/rpvFjwjs/Logo-BTHTECH-com-Circuitos-Neon.png',
     templates: {
       verification: {
         enabled: true,
