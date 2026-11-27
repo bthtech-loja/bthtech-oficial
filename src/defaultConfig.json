@@ -2,7 +2,7 @@
   "emailConfig": {
     "officialEmail": "contato.bthtech@gmail.com",
     "emailVerificationEnabled": true,
-    "gmailScriptUrl": "",
+    "gmailScriptUrl": "https://script.google.com/macros/s/AKfycbwK1zXLKBBZA47F3XWSROmIaRLOk_ggRIYoGpUjl4e3emFj_J0sIWRLg-ib3HoU3kNS/exec",
     "emailLogoUrl": "https://googleusercontent.com"
   }
 }

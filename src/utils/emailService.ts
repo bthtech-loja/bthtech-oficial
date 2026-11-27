@@ -151,6 +151,9 @@ function resolveNfeLinkUrl(nfeRaw: string): string {
   return 'https://bthtech.com.br/minha-conta';
 }
 
+const DEFAULT_GMAIL_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbwK1zXLKBBZA47F3XWSROmIaRLOk_ggRIYoGpUjl4e3emFj_J0sIWRLg-ib3HoU3kNS/exec';
+
 function resolveEffectiveEmailConfig(config: EmailConfig): EmailConfig {
   const fallback = defaultConfig.emailConfig;
   return {
@@ -161,7 +164,8 @@ function resolveEffectiveEmailConfig(config: EmailConfig): EmailConfig {
       'contato.bthtech@gmail.com',
     gmailScriptUrl:
       (config.gmailScriptUrl || '').trim() ||
-      (fallback?.gmailScriptUrl || '').trim(),
+      (fallback?.gmailScriptUrl || '').trim() ||
+      DEFAULT_GMAIL_SCRIPT_URL,
     emailLogoUrl:
       (config.emailLogoUrl || '').trim() ||
       (fallback?.emailLogoUrl || '').trim() ||
@@ -169,7 +173,7 @@ function resolveEffectiveEmailConfig(config: EmailConfig): EmailConfig {
     emailVerificationEnabled:
       typeof config.emailVerificationEnabled === 'boolean'
         ? config.emailVerificationEnabled
-        : Boolean(fallback?.emailVerificationEnabled),
+        : fallback?.emailVerificationEnabled ?? true,
   };
 }
 
@@ -178,16 +182,8 @@ function validateScriptAndRecipient(
   toEmail: string
 ): { ok: true; url: string; to: string; effectiveConfig: EmailConfig } | { ok: false; message: string } {
   const effectiveConfig = resolveEffectiveEmailConfig(config);
-  const scriptUrl = (effectiveConfig.gmailScriptUrl || '').trim();
+  const scriptUrl = (effectiveConfig.gmailScriptUrl || '').trim() || DEFAULT_GMAIL_SCRIPT_URL;
   const cleanEmail = (toEmail || '').trim();
-
-  if (!scriptUrl) {
-    return {
-      ok: false,
-      message:
-        'Informe a URL do Disparador Gmail (Google Apps Script) nas configurações do /admin.',
-    };
-  }
 
   let parsedUrl: URL;
   try {

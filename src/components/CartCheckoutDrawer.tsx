@@ -403,8 +403,7 @@ export function CartCheckoutDrawer({
 
       const shouldSendOrderEmail =
         store.email.emailVerificationEnabled &&
-        (store.email.templates?.orderConfirmed?.enabled ?? true) &&
-        store.email.gmailScriptUrl.trim().length > 0;
+        (store.email.templates?.orderConfirmed?.enabled ?? true);
 
       await Promise.all([
         new Promise((resolve) => setTimeout(resolve, 450)),

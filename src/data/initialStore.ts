@@ -260,8 +260,10 @@ export const INITIAL_STORE_STATE: StoreState = {
   },
   email: {
     officialEmail: defaultConfig.emailConfig.officialEmail || 'contato.bthtech@gmail.com',
-    emailVerificationEnabled: defaultConfig.emailConfig.emailVerificationEnabled,
-    gmailScriptUrl: defaultConfig.emailConfig.gmailScriptUrl || '',
+    emailVerificationEnabled: defaultConfig.emailConfig.emailVerificationEnabled ?? true,
+    gmailScriptUrl:
+      defaultConfig.emailConfig.gmailScriptUrl ||
+      'https://script.google.com/macros/s/AKfycbwK1zXLKBBZA47F3XWSROmIaRLOk_ggRIYoGpUjl4e3emFj_J0sIWRLg-ib3HoU3kNS/exec',
     emailLogoUrl: defaultConfig.emailConfig.emailLogoUrl || 'https://googleusercontent.com',
     templates: {
       verification: {
